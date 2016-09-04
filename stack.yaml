@@ -1,0 +1,13 @@
+resolver: nightly-2016-08-19
+
+packages:
+- 'has-sci-physics'
+- 'has-sci-physics-examples'
+
+extra-deps:
+  - gloss-1.10.2.3
+  - algebra-4.3
+
+flags: {}
+
+extra-package-dbs: []
