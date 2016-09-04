@@ -10,6 +10,7 @@ import Numeric.Additive.Class       (Additive(..))
 import Prelude hiding ((+), (*))
 
 import qualified Data.Map as M
+import qualified Data.List as L
 import Data.Maybe (catMaybes)
 
 
@@ -34,12 +35,6 @@ class (VectorSpace k a, VectorSpace k b) => DualVectors k a b | a b -> k where
 class VectorSpace k m => InnerProductSpace k m | m -> k where
     (<.>) :: m -> m -> k
 
-class VectorSpace k m => OuterProductSpace k m | m -> k where
-    (>.<) :: m -> m -> (m -> m -> k)
-
--- For some reason it doesn't deduct VectorSpace contraint from InnerProductSpace constraint
-instance (VectorSpace k m, InnerProductSpace k m)  => OuterProductSpace k m where
-    (>.<) a b = \c d ->  (a <.> c) * (b <.> d)
 
 
 -- Endo-morphism of vector space
@@ -50,7 +45,7 @@ class VectorSpace k v => SimpleOperator k v o | o -> k where
 
 class (DualVectors k cv v, SimpleOperator k v o) => Operator k v cv o | o -> k where
     (|><|) :: v -> cv -> o
-    
+
 
 (<|>) :: (InnerProductSpace k v, DualVectors k cv v) => cv -> v -> k
 (<|>) covec vec = (dual covec) <.> vec
@@ -60,8 +55,33 @@ class (DualVectors k cv v, SimpleOperator k v o) => Operator k v cv o | o -> k w
 (|>) = op
 
 
-(<|) :: (InnerProductSpace k v, DualVectors k cv v, Operator k v cv o) => o -> cv -> (v -> k)
-(<|) operator covector = \vector -> covector <|> (operator |> vector)
+(<|) :: (InnerProductSpace k v, DualVectors k cv v, Operator k v cv o) =>  cv -> o -> (v -> k)
+(<|) covector operator  = \vector -> covector <|> (operator |> vector)
+
+
+
+-- Operator formed from outerproduct of two vectors
+data OuterOperator k v cv where
+    OuterOperator :: (InnerProductSpace k v, DualVectors k cv v) => [(v, cv)] -> OuterOperator k v cv
+   
+unOuterOperator :: OuterOperator k v cv -> [(v, cv)]
+unOuterOperator (OuterOperator outerProducts) = outerProducts
+
+instance Additive (OuterOperator k v cv) where
+    (+) (OuterOperator o1) (OuterOperator o2) = OuterOperator $ o1 L.++ o2
+  
+instance ( InnerProductSpace k v
+         , DualVectors k cv v
+         )
+         => SimpleOperator k v (OuterOperator k v cv) where
+    op (OuterOperator outerProducts) vec = L.foldr1 (+) $ map (\(ovec,ocovec) -> (ocovec <|> vec) *^ ovec) $ outerProducts
+
+instance ( InnerProductSpace k v
+         , DualVectors k cv v
+         )
+         => Operator k v cv (OuterOperator k v cv) where
+    (|><|) vec covec = OuterOperator [(vec, covec)]
+
 
 
 class Complex a where
@@ -106,9 +126,7 @@ instance ( Field k, Ord m,
   
     op (SparseOperator opMap) ket = SparseKet $ M.fromListWith (+) $
         map (\(veci, coveci) -> (veci, (SparseBra $ M.fromList $ catMaybes $ [fmap ((,) coveci) $ M.lookup (veci, coveci) opMap] ) <|> ket ) ) $
-            (M.keys opMap)
- 
-
+            (M.keys opMap) 
 
 instance ( Field k, Ord m,
            InnerProductSpace k (SparseKet k m),
@@ -118,6 +136,7 @@ instance ( Field k, Ord m,
   
     (|><|) (SparseKet vecMap) (SparseBra covecMap) = SparseOperator $ M.fromList $
         catMaybes [(,) (i,j) <$> (fmap (*) (M.lookup i vecMap) <*> (M.lookup j covecMap)) | i <- M.keys vecMap, j <- M.keys covecMap ]
+
 
 
 
