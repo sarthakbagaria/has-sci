@@ -2,7 +2,6 @@
 
 module Physics.Quantum.Algebra where
 
--- import Numeric.Algebra.Complex      (Complex(..))
 import Numeric.Field.Class          (Field)
 import Numeric.Algebra.Class        (LeftModule((.*)), Multiplicative((*)))
 import Numeric.Additive.Class       (Additive(..))
@@ -12,7 +11,6 @@ import Prelude hiding ((+), (*))
 
 import qualified Data.Map as M
 import Data.Maybe (catMaybes)
-
 
 
 
@@ -46,7 +44,7 @@ instance (VectorSpace k m, InnerProductSpace k m)  => OuterProductSpace k m wher
 
 -- Endo-morphism of vector space
 -- Data structure for operator may be different for different use cases
--- A Map be suitable for sparse operator, matrix for discreet vector indices, and functions for continuous vector indices
+-- A Map be suitable for sparse operator, matrix for discreet vector indices, and functions for continuous vector indices.
 class VectorSpace k v => SimpleOperator k v o | o -> k where
     op :: o -> v -> v
 
@@ -74,7 +72,8 @@ class Complex a where
 -- Constructions of vector spaces
 
 
--- m is a set of orthogonal 'basis' indices
+-- m is a set of vector indices indices
+-- May or may not represent orthogonal vectors, write instance of InnerProductSpace separately
 -- kets are represented as maps from indices to coefficients
 -- sparse kets have finite number of non zero entries
 data SparseKet k m where
@@ -95,10 +94,8 @@ unSparseBra (SparseBra braMap) = braMap
    
 data InfBra k m = InfBra { unContBra :: (m -> k) }
 
--- tuple can be replaced by tensor product
 data SparseOperator k m = SparseOperator { unSparseOperator :: M.Map (m, m) k }
 data InfOperator k m = InfOperator { unInfOperator :: m -> m -> k }
-
 
 
 instance ( Field k, Ord m,
@@ -121,9 +118,6 @@ instance ( Field k, Ord m,
   
     (|><|) (SparseKet vecMap) (SparseBra covecMap) = SparseOperator $ M.fromList $
         catMaybes [(,) (i,j) <$> (fmap (*) (M.lookup i vecMap) <*> (M.lookup j covecMap)) | i <- M.keys vecMap, j <- M.keys covecMap ]
-
-
---instance Field k => Operator k (Sparseet k m) (SparseOperator k m) where
 
 
 

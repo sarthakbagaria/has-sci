@@ -5,7 +5,6 @@ module Physics.Classical where
 
 import qualified Numeric.Units.Dimensional as D
 import Numeric.Units.Dimensional                    ((*~))
--- import Numeric.Units.Dimensional                    ((+), (-), (*), (/), (^))
 
 import Numeric.Units.Dimensional.SIUnits            (newton, meter, kilo, gram, second)
 import Numeric.NumType.DK.Integers                  (pos2, pos3, TypeInt(Pos2, Pos3))
@@ -43,7 +42,6 @@ norm vec = D.sqrt (vec .< vec)
 
 -- zeroVector :: Num a => Vec b a
 -- zeroVector = Vec (_0, _0)
-
 
 
 type SpatialField a b = Vec D.DLength a -> b
