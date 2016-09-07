@@ -53,6 +53,8 @@ import Data.Foldable         (foldl')
 import Debug.Trace           (trace)
 import Control.Concurrent    (threadDelay)
 
+
+
 --------------------
 -- Add dimensions to quantities
 -- Since we are writing operators as endomorphisms of vector spaces
@@ -69,8 +71,8 @@ import Control.Concurrent    (threadDelay)
 -------------------
 
 
-(+:) :: Double -> Double -> Complex Double
-(+:) = (:+)
+-------------------
+-- For field instance of Complex Double
 
 instance Euclidean (Complex Double) where degree _ = Just 1
 instance Division (Complex Double)
@@ -106,46 +108,40 @@ instance RightModule Integer (Complex Double) where
 instance Abelian (Complex Double)
 
 
+-- For use by repa
 instance Elt (Complex Double) where
     touch (a :+ b) = touch a >> touch b 
 
+
+
+--------------
 
 type Position = (Int, Int)
 
 positionRange :: [Position]
 positionRange = [(x,y) | x <- [(-halfWidth) .. halfWidth], y <- [-(halfHeight) .. halfHeight]]
 
-indexRange :: Int
-indexRange = (2 * halfWidth + 1) * (2 * halfHeight + 1)
-
-positionToIndex :: Position -> Int
-positionToIndex pos = (fst pos + halfWidth) * (2 * halfHeight + 1) + (snd pos + halfHeight)
-
-indexToPosition :: Int -> Position
-indexToPosition index = ( (floor ((fromIntegral index) P./ (fromIntegral $! 2 * halfHeight + 1))) - halfWidth
-                        , (index `mod` (2 * halfHeight + 1)) - halfHeight
-                        )
 
 -------------
 -- Using index functions
 
 {-
 posXOp :: InfOperator (Complex Double) Position
-posXOp = InfOperator $ \(x,y) -> M.fromList [((x,y), (fromIntegral x) +: 0) ]
+posXOp = InfOperator $ \(x,y) -> M.fromList [((x,y), (fromIntegral x) :+ 0) ]
  
 posYOp :: InfOperator (Complex Double) Position
-posYOp = InfOperator $ \(x,y) -> M.fromList [((x,y), (fromIntegral y) +: 0)]
+posYOp = InfOperator $ \(x,y) -> M.fromList [((x,y), (fromIntegral y) :+ 0)]
 
 momXOp :: InfOperator (Complex Double) Position
 -- taking dx as 1
-momXOp = InfOperator $ \(x,y) -> M.fromList [ ( (x P.- 1, y), (0 +: (plankConstant)) ),
-                                              ( (x P.+ 1, y), (0 +: (-(plankConstant))) )
+momXOp = InfOperator $ \(x,y) -> M.fromList [ ( (x P.- 1, y), (0 :+ (plankConstant)) ),
+                                              ( (x P.+ 1, y), (0 :+ (-(plankConstant))) )
                                             ]
 
 momYOp :: InfOperator (Complex Double) Position
 -- taking dy as 1
-momYOp = InfOperator $ \(x,y) -> M.fromList [ ( (x,y P.- 1), 0 +: (plankConstant) ),
-                                              ( (x,y P.+ 1), 0 +: (-(plankConstant)) )
+momYOp = InfOperator $ \(x,y) -> M.fromList [ ( (x,y P.- 1), 0 :+ (plankConstant) ),
+                                              ( (x,y P.+ 1), 0 :+ (-(plankConstant)) )
                                             ]
 
 scOp :: (Complex Double) -> InfOperator (Complex Double) Position
@@ -153,10 +149,10 @@ scOp scalar = InfOperator $! \pos -> M.fromList [ (pos, scalar) ]
 
 
 oscillationOperator :: Double -> InfOperator (Complex Double) Position
-oscillationOperator dt = trace "OperationEnding" $! (scOp $! 1 +: 0) + ((scOp $! 0 +: (0 P.- (dt P./ plankConstant))) *
+oscillationOperator dt = trace "OperationEnding" $! (scOp $! 1 :+ 0) + ((scOp $! 0 :+ (0 P.- (dt P./ plankConstant))) *
                                                    (
-                                                     ( (momXOp `pow1p` 2) + (momYOp `pow1p` 2) * (scOp $ (1 P./ (2 P.* particleMass)) +: 0) ) +
-                                                     ( (posXOp `pow1p` 2) + (posYOp `pow1p` 2) * (scOp $ ((particleMass P./ 2) P.* oscillatorFrequency P.^ 2) +: 0) )
+                                                     ( (momXOp `pow1p` 2) + (momYOp `pow1p` 2) * (scOp $ (1 P./ (2 P.* particleMass)) :+ 0) ) +
+                                                     ( (posXOp `pow1p` 2) + (posYOp `pow1p` 2) * (scOp $ ((particleMass P./ 2) P.* oscillatorFrequency P.^ 2) :+ 0) )
                                                    )
                                                 )
 
@@ -172,21 +168,39 @@ drawing (InfKet coeffMap) = trace "Drawing" $
     where pixels = positionRange
           normSquared cn = (magnitude cn) P.^ 2
 
-
 -}
+
+
 
 ------------------
 -- Using arrays and matrices
 
+
+-- Helper functions to translate between two dimensional position and one dimensional array
+
+indexRange :: Int
+indexRange = (2 * halfWidth + 1) * (2 * halfHeight + 1)
+
+positionToIndex :: Position -> Int
+positionToIndex pos = (fst pos + halfWidth) * (2 * halfHeight + 1) + (snd pos + halfHeight)
+
+indexToPosition :: Int -> Position
+indexToPosition index = ( (floor ((fromIntegral index) P./ (fromIntegral $! 2 * halfHeight + 1))) - halfWidth
+                        , (index `mod` (2 * halfHeight + 1)) - halfHeight
+                        )
+
+
+-- position and momentum operators
+
 posXOp :: LatticeOperator (Complex Double) Position
 posXOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> if i==j
-                                                                                          then (fromIntegral $! fst $! indexToPosition i) +: 0
+                                                                                          then (fromIntegral $! fst $! indexToPosition i) :+ 0
                                                                                           else 0
                                                                            )
   
 posYOp :: LatticeOperator (Complex Double) Position
 posYOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> if i==j
-                                                                                          then (fromIntegral $! snd $! indexToPosition i) +: 0
+                                                                                          then (fromIntegral $! snd $! indexToPosition i) :+ 0
                                                                                           else 0
                                                                            )
   
@@ -200,8 +214,8 @@ momXOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:
                                                                                               False -> 0
                                                                                               True
                                                                                                 -- taking dx as 1
-                                                                                                |xn == xo P.+ 1 -> 0 +: (plankConstant)
-                                                                                                |xn == xo P.- 1 -> 0 +: (-(plankConstant))
+                                                                                                |xn == xo P.+ 1 -> 0 :+ (plankConstant)
+                                                                                                |xn == xo P.- 1 -> 0 :+ (-(plankConstant))
                                                                                                 |otherwise -> 0
                                                                            )
 
@@ -215,12 +229,13 @@ momYOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:
                                                                                               False -> 0
                                                                                               True
                                                                                                 -- taking dy as 1
-                                                                                                |yn == yo P.+ 1 -> 0 +: (plankConstant)
-                                                                                                |yn == yo P.- 1 -> 0 +: (-(plankConstant))
+                                                                                                |yn == yo P.+ 1 -> 0 :+ (plankConstant)
+                                                                                                |yn == yo P.- 1 -> 0 :+ (-(plankConstant))
                                                                                                 |otherwise -> 0
                                                                            )
 
-
+-- a scalar operator or scalar multiplication
+-- can make operators instances of Module and remove this
 scOp :: (Complex Double) -> LatticeOperator (Complex Double) Position
 scOp scalar = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> case i==j of
                                                                                                    False -> 0
@@ -230,10 +245,10 @@ scOp scalar = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) 
 
 oscillationOperator :: Double -> LatticeOperator (Complex Double) Position
 oscillationOperator dt = trace "OperationEnding" $!
-      (scOp $! 1 +: 0) + ( (scOp $! 0 +: (0 P.- (dt P./ plankConstant))) *
+      (scOp $! 1 :+ 0) + ( (scOp $! 0 :+ (0 P.- (dt P./ plankConstant))) *
                            (
-                             ( ( (momXOp `pow1p` 2) + (momYOp `pow1p` 2) ) * (scOp $ (1 P./ (2 P.* particleMass)) +: 0) ) +
-                             ( ( (posXOp `pow1p` 2) + (posYOp `pow1p` 2) ) * (scOp $ ((particleMass P./ 2) P.* oscillatorFrequency P.^ 2) +: 0) )
+                             ( ( (momXOp `pow1p` 2) + (momYOp `pow1p` 2) ) * (scOp $ (1 P./ (2 P.* particleMass)) :+ 0) ) +
+                             ( ( (posXOp `pow1p` 2) + (posYOp `pow1p` 2) ) * (scOp $ ((particleMass P./ 2) P.* oscillatorFrequency P.^ 2) :+ 0) )
                            )
                          )
 
