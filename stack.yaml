@@ -1,4 +1,4 @@
-resolver: nightly-2016-08-19
+resolver: nightly-2016-09-07
 
 packages:
 - 'has-sci-physics'

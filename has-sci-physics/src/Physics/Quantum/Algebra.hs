@@ -1,17 +1,23 @@
-{-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, UndecidableInstances, GADTs #-}
+{-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, UndecidableInstances, GADTs, TypeOperators #-}
 
 module Physics.Quantum.Algebra where
 
 import Numeric.Field.Class          (Field)
-import Numeric.Algebra.Class        (LeftModule((.*)), Multiplicative((*)))
-import Numeric.Additive.Class       (Additive(..))
+import Numeric.Algebra.Class        (LeftModule((.*)), Multiplicative((*)), Monoidal(zero))
+import Numeric.Additive.Class       (Additive((+)))
 
 
-import Prelude hiding ((+), (*))
+import Prelude hiding ((+), (*), Complex)
 
 import qualified Data.Map as M
 import qualified Data.List as L
 import Data.Maybe (catMaybes)
+
+
+import qualified Data.Array.Repa as R
+import qualified Data.Array.Repa.Eval as R
+import qualified Data.Array.Repa.Repr.Unboxed as R
+import Data.Functor.Identity (runIdentity)
 
 
 
@@ -19,9 +25,9 @@ import Data.Maybe (catMaybes)
 class (Field k, Additive m) => VectorSpace k m | m -> k where
     (*^) :: k -> m -> m
 
-
-{- The LeftModule condition breaks the functional dependency of vector space
-instance (Additive m, Field k, LeftModule k m) => VectorSpace k m where
+{-
+-- lhs type ‘m’ does not determine rhs type ‘k’
+instance (Field k, LeftModule k m) => VectorSpace k m where
     (*^) = (.*)
 -}
 
@@ -40,8 +46,27 @@ class VectorSpace k m => InnerProductSpace k m | m -> k where
 -- Endo-morphism of vector space
 -- Data structure for operator may be different for different use cases
 -- A Map be suitable for sparse operator, matrix for discreet vector indices, and functions for continuous vector indices.
-class VectorSpace k v => SimpleOperator k v o | o -> k where
+class VectorSpace k v => SimpleOperator k v o | o -> k, o -> v where
     op :: o -> v -> v
+
+-- Once we have simple operator, we can extract the map information from that
+-- and get addition and multiplication operations
+data OperatorMap v where
+    OperatorMap :: VectorSpace k v => (v -> v) -> OperatorMap v
+
+unOperatorMap :: OperatorMap v -> (v -> v)
+unOperatorMap (OperatorMap m) = m
+
+extractOperatorMap :: SimpleOperator k v o => o -> OperatorMap v
+extractOperatorMap = OperatorMap . op
+
+instance Additive v => Additive (OperatorMap v) where
+    (+) (OperatorMap operator1) (OperatorMap operator2) = OperatorMap $ \vec -> (operator1 vec) + (operator2 vec)
+
+instance  Multiplicative (OperatorMap o) where
+    (*) (OperatorMap operator1) (OperatorMap operator2) = OperatorMap $ \vec -> operator1 (operator2 vec)
+
+
 
 class (DualVectors k cv v, SimpleOperator k v o) => Operator k v cv o | o -> k where
     (|><|) :: v -> cv -> o
@@ -58,37 +83,13 @@ class (DualVectors k cv v, SimpleOperator k v o) => Operator k v cv o | o -> k w
 (<|) :: (InnerProductSpace k v, DualVectors k cv v, Operator k v cv o) =>  cv -> o -> (v -> k)
 (<|) covector operator  = \vector -> covector <|> (operator |> vector)
 
+    
 
-
--- Operator formed from outerproduct of two vectors
-data OuterOperator k v cv where
-    OuterOperator :: (InnerProductSpace k v, DualVectors k cv v) => [(v, cv)] -> OuterOperator k v cv
-   
-unOuterOperator :: OuterOperator k v cv -> [(v, cv)]
-unOuterOperator (OuterOperator outerProducts) = outerProducts
-
-instance Additive (OuterOperator k v cv) where
-    (+) (OuterOperator o1) (OuterOperator o2) = OuterOperator $ o1 L.++ o2
-  
-instance ( InnerProductSpace k v
-         , DualVectors k cv v
-         )
-         => SimpleOperator k v (OuterOperator k v cv) where
-    op (OuterOperator outerProducts) vec = L.foldr1 (+) $ map (\(ovec,ocovec) -> (ocovec <|> vec) *^ ovec) $ outerProducts
-
-instance ( InnerProductSpace k v
-         , DualVectors k cv v
-         )
-         => Operator k v cv (OuterOperator k v cv) where
-    (|><|) vec covec = OuterOperator [(vec, covec)]
-
-
-
-class Complex a where
+class IsComplex a where
     complexConjugate :: a -> a
 
 
------- 
+----------------------------------
 -- Constructions of vector spaces
 
 
@@ -101,9 +102,6 @@ data SparseKet k m where
     
 unSparseKet :: SparseKet k m -> M.Map m k
 unSparseKet (SparseKet ketMap) = ketMap
-
-  
-data InfKet k m = InfKet { unContKet :: (m -> k) }
     
 data SparseBra k m where
      SparseBra :: (Field k, Ord m) => M.Map m k -> SparseBra k m
@@ -111,12 +109,104 @@ data SparseBra k m where
 unSparseBra :: SparseBra k m -> M.Map m k
 unSparseBra (SparseBra braMap) = braMap
 
-   
+
+data InfKet k m = InfKet { unContKet :: (m -> k) }
 data InfBra k m = InfBra { unContBra :: (m -> k) }
 
-data SparseOperator k m = SparseOperator { unSparseOperator :: M.Map (m, m) k }
-data InfOperator k m = InfOperator { unInfOperator :: m -> m -> k }
 
+-- a vector of coefficients at lattice points
+data LatticeKet k m = LatticeKet { unLatticeKet :: R.Array R.D R.DIM1 k }
+data LatticeBra k m = LatticeBra { unLatticeBra :: R.Array R.D R.DIM1 k }
+
+
+
+instance (Ord m, Field k) => Additive (SparseKet k m) where
+    (+) (SparseKet a) (SparseKet b) = SparseKet $ M.unionWith (+) a b
+
+instance (Ord m, Field k) => Additive (SparseBra k m) where
+    (+) (SparseBra a) (SparseBra b) = SparseBra $ M.unionWith (+) a b
+
+instance (Ord m, Field k) => VectorSpace k (SparseKet k m) where
+    (*^) s (SparseKet v) = SparseKet $ M.map (s *) v
+
+instance (Field k, Ord m) => VectorSpace k (SparseBra k m) where
+    (*^) s (SparseBra v) = SparseBra $ M.map (s *) v
+
+instance (Field k, IsComplex k, Ord m) => DualVectors k (SparseKet k m) (SparseBra k m) where
+    dual (SparseKet a) = SparseBra $ M.map complexConjugate a
+
+instance (Field k, IsComplex k, Ord m) => DualVectors k (SparseBra k m) (SparseKet k m) where
+    dual (SparseBra a) = SparseKet $ M.map complexConjugate a
+
+
+instance Field k => Additive (InfKet k m) where
+    (+) (InfKet a) (InfKet b) = InfKet $ \x -> a x + b x
+
+instance Field k => Additive (InfBra k m) where
+    (+) (InfBra a) (InfBra b) = InfBra $ \x -> a x + b x
+
+instance Field k => VectorSpace k (InfKet k m) where
+    (*^) s (InfKet v) = InfKet $ \x -> s * (v x)
+   
+instance Field k => VectorSpace k (InfBra k m) where
+    (*^) s (InfBra v) = InfBra $ \x -> s * (v x)
+
+instance (Field k, IsComplex k) => DualVectors k (InfKet k m) (InfBra k m) where
+    dual (InfKet a) = InfBra $ \x -> complexConjugate $ a x
+
+instance (Field k, IsComplex k) => DualVectors k (InfBra k m) (InfKet k m) where
+    dual (InfBra a) = InfKet $ \x -> complexConjugate $ a x
+
+
+instance Field k => Additive (LatticeKet k m) where
+   (+) (LatticeKet a) (LatticeKet b) = LatticeKet $! R.zipWith (+) a b
+
+instance Field k => Additive (LatticeBra k m) where
+   (+) (LatticeBra a) (LatticeBra b) = LatticeBra $! R.zipWith (+) a b
+
+instance Field k => VectorSpace k (LatticeKet k m) where
+    (*^) s (LatticeKet v) = LatticeKet $! R.map (s *) v
+ 
+instance Field k => VectorSpace k (LatticeBra k m) where
+    (*^) s (LatticeBra v) = LatticeBra $! R.map (s *) v
+
+instance (Field k, IsComplex k) => DualVectors k (LatticeKet k m) (LatticeBra k m) where
+    dual (LatticeKet a) = LatticeBra $! R.map complexConjugate a
+
+instance (Field k, IsComplex k) => DualVectors k (LatticeBra k m) (LatticeKet k m) where
+    dual (LatticeBra a) = LatticeKet $! R.map complexConjugate a
+
+
+-------------------------------------
+-- Constructions of operators
+
+
+-- Operator formed from outerproduct of two vectors
+data OuterOperator k v cv where
+    OuterOperator :: (InnerProductSpace k v, DualVectors k cv v) => [(v, cv)] -> OuterOperator k v cv
+   
+unOuterOperator :: OuterOperator k v cv -> [(v, cv)]
+unOuterOperator (OuterOperator outerProducts) = outerProducts
+
+instance ( InnerProductSpace k v
+         , DualVectors k cv v
+         )
+         => SimpleOperator k v (OuterOperator k v cv) where
+    op (OuterOperator outerProducts) vec = L.foldr1 (+) $ map (\(ovec,ocovec) -> (ocovec <|> vec) *^ ovec) $ outerProducts
+
+instance ( InnerProductSpace k v
+         , DualVectors k cv v
+         )
+         => Operator k v cv (OuterOperator k v cv) where
+    (|><|) vec covec = OuterOperator [(vec, covec)]
+
+instance Additive (OuterOperator k v cv) where
+    (+) (OuterOperator o1) (OuterOperator o2) = OuterOperator $ o1 L.++ o2
+
+
+
+-- a sparse operator represented as a map from (i,j) to coefficient of |i><j|
+data SparseOperator k m = SparseOperator { unSparseOperator :: M.Map (m, m) k }
 
 instance ( Field k, Ord m,
            InnerProductSpace k (SparseKet k m),
@@ -125,7 +215,10 @@ instance ( Field k, Ord m,
          => SimpleOperator k (SparseKet k m) (SparseOperator k m) where
   
     op (SparseOperator opMap) ket = SparseKet $ M.fromListWith (+) $
-        map (\(veci, coveci) -> (veci, (SparseBra $ M.fromList $ catMaybes $ [fmap ((,) coveci) $ M.lookup (veci, coveci) opMap] ) <|> ket ) ) $
+        map (\(veci, coveci) -> ( veci
+                                , (SparseBra $ M.fromListWith (+) $ catMaybes $ [fmap ((,) coveci) $ M.lookup (veci, coveci) opMap]) <|> ket
+                                )
+            ) $
             (M.keys opMap) 
 
 instance ( Field k, Ord m,
@@ -133,49 +226,67 @@ instance ( Field k, Ord m,
            DualVectors k (SparseBra k m) (SparseKet k m)
          )
          => Operator k (SparseKet k m) (SparseBra k m) (SparseOperator k m) where
-  
-    (|><|) (SparseKet vecMap) (SparseBra covecMap) = SparseOperator $ M.fromList $
+    (|><|) (SparseKet vecMap) (SparseBra covecMap) = SparseOperator $ M.fromListWith (+) $
         catMaybes [(,) (i,j) <$> (fmap (*) (M.lookup i vecMap) <*> (M.lookup j covecMap)) | i <- M.keys vecMap, j <- M.keys covecMap ]
 
 
 
+-- a more general operator represened as a map from j to Map i_n s_n where operator takes |i_n> to s_n |j>
+-- this construct may not suffice when there are uncountable such i_n
+data InfOperator k m = InfOperator { unInfOperator :: m -> M.Map m k }
 
-instance (Ord m, Field k) => Additive (SparseKet k m) where
-    (+) (SparseKet a) (SparseKet b) = SparseKet $ M.unionWith (+) a b
+instance (Field k) => SimpleOperator k (InfKet k m) (InfOperator k m) where
+    op operator = \(InfKet coeffMap) -> InfKet $ \index -> foldr1 (+) $
+        map ( \(invIndex, factor) -> factor * coeffMap invIndex ) $
+            M.toList $ unInfOperator operator $ index
 
-instance Field k => Additive (InfKet k m) where
-    (+) (InfKet a) (InfKet b) = InfKet $ \x -> a x + b x
+instance (Field k, Ord m) => Additive (InfOperator k m) where
+    (+) (InfOperator op1) (InfOperator op2) = InfOperator $ \index -> M.unionWith (+) (op1 index) (op2 index)
 
-instance (Ord m, Field k) => Additive (SparseBra k m) where
-    (+) (SparseBra a) (SparseBra b) = SparseBra $ M.unionWith (+) a b
-
-instance Field k => Additive (InfBra k m) where
-    (+) (InfBra a) (InfBra b) = InfBra $ \x -> a x + b x
-
-
-    
-instance (Ord m, Field k) => VectorSpace k (SparseKet k m) where
-    (*^) s (SparseKet v) = SparseKet $ M.map (s *) v
-    
-instance Field k => VectorSpace k (InfKet k m) where
-    (*^) s (InfKet v) = InfKet $ \x -> s * (v x)
-
-instance (Field k, Ord m) => VectorSpace k (SparseBra k m) where
-    (*^) s (SparseBra v) = SparseBra $ M.map (s *) v
-    
-instance Field k => VectorSpace k (InfBra k m) where
-    (*^) s (InfBra v) = InfBra $ \x -> s * (v x)    
+instance (Field k, Ord m) => Multiplicative (InfOperator k m) where
+    (*) (InfOperator op1) (InfOperator op2) = InfOperator $ \index ->
+            foldr1 (M.unionWith (+)) $
+                map (\(i,s) -> M.map (s *) $ op2 i) $
+                    M.toList $ op1 index
 
 
+-- A matrix to transfom LatticeKet vector
+data LatticeOperator k m = LatticeOperator { unLatticeOperator :: R.Array R.D R.DIM2 k }
 
-instance (Field k, Complex k, Ord m) => DualVectors k (SparseKet k m) (SparseBra k m) where
-    dual (SparseKet a) = SparseBra $ M.map complexConjugate a
+instance (Field k, R.Elt k, R.Unbox k, Num k) => SimpleOperator k (LatticeKet k m) (LatticeOperator k m) where
+    op (LatticeOperator matrix) (LatticeKet vector) = LatticeKet $! R.delay $! runIdentity $! mvMultP matrix vector
 
-instance (Field k, Complex k) => DualVectors k (InfKet k m) (InfBra k m) where
-    dual (InfKet a) = InfBra $ \x -> complexConjugate $ a x
+instance (Field k) => Additive (LatticeOperator k m) where
+    (+) (LatticeOperator op1) (LatticeOperator op2) = LatticeOperator $! R.zipWith (+) op1 op2
 
-instance (Field k, Complex k, Ord m) => DualVectors k (SparseBra k m) (SparseKet k m) where
-    dual (SparseBra a) = SparseKet $ M.map complexConjugate a
+instance (Field k, R.Elt k, R.Unbox k, Num k) => Multiplicative (LatticeOperator k m) where
+    (*) (LatticeOperator op1) (LatticeOperator op2) = LatticeOperator $! R.delay $! runIdentity $! mmMultP op1 op2
 
-instance (Field k, Complex k) => DualVectors k (InfBra k m) (InfKet k m) where
-    dual (InfBra a) = InfKet $ \x -> complexConjugate $ a x
+
+-- Taken from Repa wiki, attempt to extend it to more Additive and Multiplicative structures
+mmMultP :: (Monad m, R.Source r k, Additive k, Multiplicative k, R.Elt k, R.Unbox k, Num k)
+        => R.Array r R.DIM2 k
+        -> R.Array r R.DIM2 k
+        -> m (R.Array R.U R.DIM2 k)
+mmMultP a b = R.sumP (R.zipWith (*) aRepl bRepl)
+    where
+      -- Note: transpose transposes the lowest two dimensions
+      t = R.transpose b
+      aRepl = R.extend (R.Z R.:.R.All R.:.colsB R.:.R.All) a
+      bRepl = R.extend (R.Z R.:.rowsA R.:.R.All R.:.R.All) t
+
+      (R.Z R.:.colsA R.:.rowsA) = R.extent a
+      (R.Z R.:.colsB R.:.rowsB) = R.extent b
+
+-- Multiply a martix with a vector
+-- based on the above matrix matrix multiplication
+mvMultP :: (Monad m, R.Source r k, Additive k, Multiplicative k, R.Elt k, R.Unbox k, Num k)
+        => R.Array r R.DIM2 k
+        -> R.Array r R.DIM1 k
+        -> m (R.Array R.U R.DIM1 k)
+mvMultP a b = R.sumP (R.zipWith (*) aRepl bRepl)
+    where
+      aRepl = a
+      bRepl = R.extend (R.Z R.:.rowsA R.:.R.All) b
+      (R.Z R.:.rowsA R.:.colsA) = R.extent a
+
