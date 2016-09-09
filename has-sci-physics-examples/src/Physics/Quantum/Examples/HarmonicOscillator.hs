@@ -4,24 +4,23 @@ module Physics.Quantum.Examples.HarmonicOscillator where
 
 import Physics.Quantum.Algebra
 
-import Numeric.Additive.Class          (Additive((+)), Abelian(..))
+import Numeric.Additive.Class          (Additive((+)), Abelian)
 import Numeric.Algebra.Class           ( Multiplicative((*), pow1p)
-                                       , Monoidal(..), Semiring(..), LeftModule(..), RightModule(..)
+                                       , Monoidal(..), Semiring, LeftModule(..), RightModule(..)
                                        )
 
 import Numeric.Algebra.Division        (Division(..))
 import Numeric.Domain.Euclidean        (Euclidean(..))
 import Numeric.Domain.PID              (PID(..))
-import Numeric.Domain.UFD              (UFD(..))
+import Numeric.Domain.UFD              (UFD)
 import Numeric.Domain.GCD              (GCDDomain(..))
 import Numeric.Domain.Integral         (IntegralDomain(..))
 import Numeric.Algebra.Unital          (Unital(..))
 import Numeric.Algebra.Unital.UnitNormalForm (UnitNormalForm(..))
 import Numeric.Decidable.Zero          (DecidableZero(..))
-import Numeric.Semiring.ZeroProduct    (ZeroProductSemiring(..))
-import Numeric.Algebra.Commutative     (Commutative(..))
+import Numeric.Semiring.ZeroProduct    (ZeroProductSemiring)
+import Numeric.Algebra.Commutative     (Commutative)
 import Numeric.Decidable.Units         (DecidableUnits(..))
-import Numeric.Algebra.Unital.UnitNormalForm  (UnitNormalForm)
 import Numeric.Ring.Class              (Ring(..))
 import Numeric.Decidable.Associates    (DecidableAssociates(..))
 import Numeric.Rig.Class               (Rig(..))
@@ -30,8 +29,7 @@ import Numeric.Additive.Group          (Group(..))
 import GHC.Natural                     (Natural)
 import GHC.Float                       (double2Float)
 
-import Data.Array.Repa.Eval            (Elt(..))
-import Data.Vector.Unboxed             (Unbox(..))
+import Data.Array.Repa.Eval            (Elt(touch))
 
   
 import Data.Complex                    (Complex(..), magnitude)
@@ -47,8 +45,6 @@ import Data.Functor.Identity (runIdentity)
 import Graphics.Gloss
 import Graphics.Gloss.Data.ViewPort                 (ViewPort)
 
-import Data.Traversable      (for)
-import Data.Foldable         (foldl')
 
 import Debug.Trace           (trace)
 import Control.Concurrent    (threadDelay)
@@ -63,19 +59,485 @@ import Control.Concurrent    (threadDelay)
 -- Or we may need to relax the condition of operator to homomorphims of vector spaces
 -------------------
 
+
+
+
+------------------------------------------
+-- Configure
+------------------------------------------
+
+data OscillatorInABoxConfig = OscillatorInABoxConfig { plankConstantConfig :: Double
+                                                     , particleMassConfig :: Double
+                                                     , oscillatorFrequencyConfig :: Double
+                                                     , halfWidthConfig :: Int
+                                                     , halfHeightConfig :: Int
+                                                     , initialAmplitudeConfig :: Position -> Complex Double
+                                                     , fpsConfig :: Int
+                                                     -- the simulation will play this times faster than real time
+                                                     -- mainly to keep time steps small while keeping fps low
+                                                     -- the time step in each simulation will be this divided by fps
+                                                     , timeFactorConfig :: TimeStep
+                                                     }
+
+
+
+type TimeStep = Double
+
+data Position = Position { posX :: Int , posY :: Int }
+    deriving (Eq, Ord, Show)
+
+
+type Variance = Double
+
+
+gaussianWave :: Int -> Int -> Variance -> (Position -> Complex Double)
+gaussianWave xCenter yCenter var = \pos@(Position x y) -> 
+    ( exp ( (
+              - ( ((fromIntegral (x - xCenter))P.^2) P.+ ((fromIntegral (y - yCenter) )P.^2) )
+            ) P./ (2 P.* (var P.^ 2))
+          )
+    ) :+ 0
+
+
+
+---------------------
+-- Helper functions to generate lattice and translate between two dimensional position and one dimensional array
+-- may not need to modify these
 --------------------
--- This simulator is super-inefficient at the moment
--- only runs on a lattice of around 3x3
--- Use textSimulateOscillation
--- as 3x3 pixels on graphical simulation may not be very visible 
--------------------
+
+positionRangeConfig :: OscillatorInABoxConfig -> [Position]
+positionRangeConfig config = [Position x y | x <- [-halfWidth .. halfWidth], y <- [-halfHeight .. halfHeight]]
+    where halfWidth = halfWidthConfig config
+          halfHeight = halfHeightConfig config
+
+
+indexRangeConfig :: OscillatorInABoxConfig -> Int
+indexRangeConfig config = (2 * halfWidth + 1) * (2 * halfHeight + 1)
+    where halfWidth = halfWidthConfig config
+          halfHeight = halfHeightConfig config
+
+
+positionToIndexConfig :: OscillatorInABoxConfig -> Position -> Int
+positionToIndexConfig config pos = ((posX pos + halfWidth) * (2 * halfHeight + 1)) + (posY pos + halfHeight)
+    where halfWidth = halfWidthConfig config
+          halfHeight = halfHeightConfig config
+                              
+
+indexToPositionConfig :: OscillatorInABoxConfig -> Int -> Position
+indexToPositionConfig config index = Position ( (floor ((fromIntegral index) P./ (fromIntegral $! 2 * halfHeight + 1))) - halfWidth )
+                                              ( (index `mod` (2 * halfHeight + 1)) - halfHeight )
+    where halfWidth = halfWidthConfig config
+          halfHeight = halfHeightConfig config
+  
+
+
+
+
+------------------------------------
+-- simulate oscillation using sparse maps
+-- can work for around halfWidth=20, halfHeight=20 under 5 seconds
+------------------------------------
+
+
+sparseModelSimulator :: OscillatorInABoxConfig
+                     -> ( TimeStep -> SparseOperator (Complex Double) Position
+                        , SparseKet (Complex Double) Position
+                        , SparseKet (Complex Double) Position -> Picture
+                        , OscillatorInABoxConfig
+                        ) 
+sparseModelSimulator config = (oscillationOperator, initialModel, drawing, config)
+    where
+        -- shorthands for config params
+        positionRange = positionRangeConfig config
+        halfWidth = halfWidthConfig config
+        halfHeight = halfHeightConfig config
+
+        plankConstant = plankConstantConfig config
+        particleMass = particleMassConfig config
+        oscillatorFrequency = oscillatorFrequencyConfig config
+        
+        initialAmplitude = initialAmplitudeConfig config
+        
+      
+        -- position and momentum operators
+        
+        posXOp :: SparseOperator (Complex Double) Position
+        posXOp = SparseOperator $! M.fromList $! map (\pos@(Position x _) -> ((pos,pos), ((fromIntegral x) :+ 0))) positionRange
+
+        posYOp :: SparseOperator (Complex Double) Position
+        posYOp = SparseOperator $! M.fromList $! map (\pos@(Position _ y) -> ((pos,pos), ((fromIntegral y) :+ 0))) positionRange
+
+        momXOp :: SparseOperator (Complex Double) Position
+        -- taking dx as 1
+        momXOp = SparseOperator $! M.fromList $! ( (map (\pos@(Position x y) -> ( (Position (x P.+ 1) y, pos), 0 :+ (  plankConstant) ))
+                                                        -- removing max x from position range to keeo operator within lattice
+                                                        [Position i j | i <- [(-halfWidth) .. (halfWidth-1)], j <- [-(halfHeight) .. halfHeight]]
+                                                   ) ++
+                                                   (map (\pos@(Position x y) -> ( (Position (x P.- 1) y, pos), 0 :+ (- plankConstant) ))
+                                                        -- removing min x from position range to keeo operator within lattice
+                                                        [Position i j | i <- [-(halfWidth-1) .. (halfWidth)], j <- [-(halfHeight) .. halfHeight]]
+                                                   )
+                                                 )
+
+        momYOp :: SparseOperator (Complex Double) Position
+        -- taking dy as 1
+        momYOp = SparseOperator $! M.fromList $! ( (map (\pos@(Position x y) -> ( (Position x (y P.+ 1), pos), 0 :+ (  plankConstant) ))
+                                                        -- removing max y from position range to keeo operator within lattice
+                                                        [Position i j | i <- [(-halfWidth) .. (halfWidth)], j <- [-(halfHeight) .. (halfHeight-1)]]
+                                                   )
+                                                    ++
+                                                   (map (\pos@(Position x y) -> ( (Position x (y P.- 1), pos), 0 :+ (- plankConstant) ))
+                                                        -- removing min y from position range to keeo operator within lattice
+                                                        [Position i j | i <- [(-halfWidth) .. (halfWidth)], j <- [-(halfHeight-1) .. halfHeight]]
+                                                   )
+                                                                              
+                                                 )
+
+        momSquaredOp = (momXOp `pow1p` 2) + (momYOp `pow1p` 2)
+        posSquaredOp = (posXOp `pow1p` 2) + (posYOp `pow1p` 2)
+          
+
+        idOp :: SparseOperator (Complex Double) Position
+        idOp = SparseOperator $! M.fromList $! map (\pos@(Position _ _) -> ((pos,pos), 1)) positionRange
+
+
+        oscillationOperator :: Double -> SparseOperator (Complex Double) Position
+        oscillationOperator dt =
+              idOp + ( (0 :+ (0 P.- (dt P./ plankConstant))) .*
+                       (
+                         ( (((particleMass P./ 2) P.* (oscillatorFrequency P.^ 2)) :+ 0) .* posSquaredOp ) +
+                         ( ((1 P./ (2 P.* particleMass)) :+ 0)                           .* momSquaredOp )
+                       )
+                     )
+
+          
+        initialModel :: SparseKet (Complex Double) Position
+        initialModel = normalizeVector $! SparseKet $! M.fromList $! map ( \pos@(Position x y) -> (pos, initialAmplitude pos) ) positionRange
+
+
+        drawing :: SparseKet (Complex Double) Position -> Picture
+        drawing (SparseKet coeffMap) = {- trace "Drawing" $ -} 
+            pictures $ map (\((Position x y), amp) -> translate (fromIntegral x) (fromIntegral y) $!
+                                                              color (withAlpha (double2Float $! normSquared amp) red) $!
+                                                                  circleSolid 1
+                           ) $! M.toList $! coeffMap
+            where
+                normSquared cn = (magnitude cn) P.^ 2
+
+
+
+
+------------------------------------
+-- Using repa arrays and matrices
+-- Matrix multiplication turns out to be the bottleneck
+-- can work for around halfWidth=2, halfHeight=2
+------------------------------------
+
+
+arrayModelSimulator :: OscillatorInABoxConfig
+                    -> ( TimeStep -> LatticeOperator (Complex Double) Position
+                       , LatticeKet (Complex Double) Position
+                       , LatticeKet (Complex Double) Position -> Picture
+                       , OscillatorInABoxConfig
+                       )
+arrayModelSimulator config = (oscillationOperator, initialModel, drawing, config)
+    where
+        -- shorthands for config params
+        positionRange = positionRangeConfig config
+        halfWidth = halfWidthConfig config
+        halfHeight = halfHeightConfig config
+
+        indexRange = indexRangeConfig config
+        positionToIndex = positionToIndexConfig config
+        indexToPosition = indexToPositionConfig config
+
+        plankConstant = plankConstantConfig config
+        particleMass = particleMassConfig config
+        oscillatorFrequency = oscillatorFrequencyConfig config
+        
+        initialAmplitude = initialAmplitudeConfig config
+        
+          
+        -- position and momentum operators
+      
+        posXOp :: LatticeOperator (Complex Double) Position
+        posXOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> if i==j
+                                                                                                  then (fromIntegral $! posX $! indexToPosition i) :+ 0
+                                                                                                  else 0
+                                                                                   )
+
+        posYOp :: LatticeOperator (Complex Double) Position
+        posYOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> if i==j
+                                                                                                  then (fromIntegral $! posY $! indexToPosition i) :+ 0
+                                                                                                  else 0
+                                                                                   )
+
+        momXOp :: LatticeOperator (Complex Double) Position
+        momXOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> let xo = posX $! indexToPosition j
+                                                                                                      yo = posY $! indexToPosition j
+                                                                                                      xn = posX $! indexToPosition i
+                                                                                                      yn = posY $! indexToPosition i
+                                                                                                  in
+                                                                                                    case yn==yo of
+                                                                                                      False -> 0
+                                                                                                      True
+                                                                                                        -- taking dx as 1
+                                                                                                        |xn == xo P.+ 1 -> 0 :+ (plankConstant)
+                                                                                                        |xn == xo P.- 1 -> 0 :+ (-(plankConstant))
+                                                                                                        |otherwise -> 0
+                                                                                   )
+
+        momYOp :: LatticeOperator (Complex Double) Position
+        momYOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> let xo = posX $! indexToPosition j
+                                                                                                      yo = posY $! indexToPosition j
+                                                                                                      xn = posX $! indexToPosition i
+                                                                                                      yn = posY $! indexToPosition i
+                                                                                                  in
+                                                                                                    case xn==xo of
+                                                                                                      False -> 0
+                                                                                                      True
+                                                                                                        -- taking dy as 1
+                                                                                                        |yn == yo P.+ 1 -> 0 :+ (plankConstant)
+                                                                                                        |yn == yo P.- 1 -> 0 :+ (-(plankConstant))
+                                                                                                        |otherwise -> 0
+                                                                                   )
+
+        momSquaredOp = (momXOp `pow1p` 2) + (momYOp `pow1p` 2)
+        posSquaredOp = (posXOp `pow1p` 2) + (posYOp `pow1p` 2)
+
+
+        -- identity operator
+        -- can make operator an instance of Unital, but don't know any one of writing the identity matrix in repa independent of dimensions
+        idOp :: LatticeOperator (Complex Double) Position
+        idOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> case i==j of
+                                                                                     False -> 0
+                                                                                     True -> 1
+                                                                                 )
+
+        -- simulation operator
+        oscillationOperator :: Double -> LatticeOperator (Complex Double) Position
+        oscillationOperator dt =
+              idOp + ( (0 :+ (0 P.- (dt P./ plankConstant))) .*
+                       (
+                         ( (((particleMass P./ 2) P.* (oscillatorFrequency P.^ 2)) :+ 0) .* posSquaredOp ) +
+                         ( ((1 P./ (2 P.* particleMass)) :+ 0)                           .* momSquaredOp )
+                       )
+                     )
+
+        -- initial ket
+        initialModel :: LatticeKet (Complex Double) Position
+        initialModel = LatticeKet $! R.fromFunction (Z :. indexRange) $! \(Z:.i) -> initialAmplitude $! indexToPosition i
+              
+
+        drawing :: LatticeKet (Complex Double) Position -> Picture
+        drawing (LatticeKet vector) = {- trace "Drawing" $ -}
+          pictures $ map (\(Position x y) -> translate (fromIntegral x) (fromIntegral y) $!
+                                    color (withAlpha (double2Float $ normSquared $! (vector R.! ( Z:.(positionToIndex (Position x y))))) red) $!
+                                    circleSolid 1
+                         ) $ positionRange
+            where normSquared cn = (magnitude cn) P.^ 2
+              
+     
+
+
+
+------------------------------------
+-- simulate oscillation using index functions
+-- doesn't work at the moment
+------------------------------------
+
+indexFunctionsSimulator :: OscillatorInABoxConfig
+                        -> ( TimeStep -> InfOperator (Complex Double) Position
+                           , InfKet (Complex Double) Position
+                           , InfKet (Complex Double) Position -> Picture
+                           , OscillatorInABoxConfig
+                           )
+indexFunctionsSimulator config = (oscillationOperator, initialModel, drawing, config)
+    where
+        -- shorthands for config params
+        positionRange = positionRangeConfig config
+        halfWidth = halfWidthConfig config
+        halfHeight = halfHeightConfig config
+
+        plankConstant = plankConstantConfig config
+        particleMass = particleMassConfig config
+        oscillatorFrequency = oscillatorFrequencyConfig config
+        
+        initialAmplitude = initialAmplitudeConfig config
+
+      
+        -- position and momentum operators
+        posXOp :: InfOperator (Complex Double) Position
+        posXOp = InfOperator $ \pos@(Position x _) -> M.fromList [(pos, (fromIntegral x) :+ 0) ]
+
+        posYOp :: InfOperator (Complex Double) Position
+        posYOp = InfOperator $ \pos@(Position _ y) -> M.fromList [(pos, (fromIntegral y) :+ 0)]
+
+        momXOp :: InfOperator (Complex Double) Position
+        -- taking dx as 1
+        momXOp = InfOperator $ \pos@(Position x y) -> M.fromList [ ( Position (x P.- 1) y, (0 :+ (plankConstant)) ),
+                                                                   ( Position (x P.+ 1) y, (0 :+ (-(plankConstant))) )
+                                                                 ]
+
+        momYOp :: InfOperator (Complex Double) Position
+        -- taking dy as 1
+        momYOp = InfOperator $ \pos@(Position x y) -> M.fromList [ ( Position x (y P.- 1), 0 :+ (plankConstant) ),
+                                                                   ( Position x (y P.+ 1), 0 :+ (-(plankConstant)) )
+                                                                 ]
+
+        momSquaredOp = (momXOp `pow1p` 2) + (momYOp `pow1p` 2)
+        posSquaredOp = (posXOp `pow1p` 2) + (posYOp `pow1p` 2)
+
+        scOp :: (Complex Double) -> InfOperator (Complex Double) Position
+        scOp scalar = InfOperator $! \pos -> M.fromList [ (pos, scalar) ]
+
+
+        oscillationOperator :: Double -> InfOperator (Complex Double) Position
+        oscillationOperator dt = (scOp $! 1 :+ 0) + ((scOp $! 0 :+ (0 P.- (dt P./ plankConstant))) *
+                                                     (
+                                                       ( momSquaredOp * (scOp $ (1 P./ (2 P.* particleMass)) :+ 0) ) +
+                                                       ( posSquaredOp * (scOp $ ((particleMass P./ 2) P.* oscillatorFrequency P.^ 2) :+ 0) )
+                                                     )
+                                                    )
+
+        initialModel :: InfKet (Complex Double) Position
+        initialModel = InfKet $! initialAmplitude
+
+        drawing :: InfKet (Complex Double) Position -> Picture
+        drawing (InfKet coeffMap) = {- trace "Drawing" $ -}
+            pictures $ map (\(Position x y) -> translate (fromIntegral x) (fromIntegral y) $!
+                                               color (withAlpha (double2Float $! normSquared $! coeffMap (Position x y)) red) $!
+                                               circleSolid 1
+                           ) $ positionRange
+            where normSquared cn = (magnitude cn) P.^ 2
+
+
+
+
+
+------------------------------------------
+-- Simulate
+------------------------------------------
+
+
+simulateOscillation :: (VectorSpace k v, SimpleOperator k v o, NormalizeVector v)
+                    => (TimeStep -> o)
+                    -> v
+                    -> (v -> Picture)
+                    -> OscillatorInABoxConfig
+                    -> IO ()
+simulateOscillation oscillationOperator initialModel drawing config = do
+    -- return $! trace "Start Calculating Operator." ()
+    -- keeping fps constant to avoid recalculation of operator
+    operator <- return $! oscillationOperator $! 1 P./ (fromIntegral fps) P.* timeFactor
+    -- return $! trace "Finish Calculating Operator." ()
+    simulate (InWindow "Nice Window" (2*halfWidth, 2*halfHeight) (halfWidth, halfHeight))
+             black
+             fps
+             initialModel
+             drawing
+             (simulation operator)
+
+    where
+        fps = fpsConfig config
+        halfHeight = halfHeightConfig config
+        halfWidth = halfWidthConfig config
+        timeFactor = timeFactorConfig config
+        
+        simulation :: (VectorSpace k v, SimpleOperator k v o, NormalizeVector v)
+                   => o -> ViewPort -> Float
+                   -> v -> v
+        simulation operator _ _ ket = {- trace "Simulating" $! -} normalizeVector $! operator `op` ket
+
+
+                        
+textSimulateOscillation :: (VectorSpace k v, Show v, SimpleOperator k v o, NormalizeVector v)
+                        => (TimeStep -> o)
+                        -> v
+                        -> OscillatorInABoxConfig
+                        -> IO ()
+textSimulateOscillation oscillationOperator initialModel config = do
+    -- return $! trace "Start Calculating Operator." ()
+    operator <- return $ oscillationOperator $! 1 P./ (fromIntegral fps) P.* timeFactor
+    -- return $! trace "Finish Calculating Operator." ()
+    go operator initialModel
+
+    where
+        fps = fpsConfig config
+        timeFactor = timeFactorConfig config
+        
+        go :: ( VectorSpace k v, SimpleOperator k v o
+              , Show v, NormalizeVector v
+              )
+            => o -> v -> IO ()
+        go operator ket = do
+                print ket
+                threadDelay 1000000
+                -- TO DO:  normalize the vector
+                let nextMap = operator `op` ket 
+                go operator $! normalizeVector nextMap
+
+
+
+
+
+--------------------------------
+--Class Instances
+--------------------------------
+
+
+class NormalizeVector a where
+    normalizeVector :: a -> a
+
+
+instance NormalizeVector (SparseKet (Complex Double) Position) where
+    normalizeVector ket@(SparseKet ketMap) = (1 / (norm :+ 0)) *^ ket
+        where
+            -- ketNormSquared = M.foldl' (P.+) 0 $! M.map (\coeff -> normSquared coeff) ketMap
+            -- normalizing with max of norms instead of sum of squares of norm to make the states more visible in simulation
+            maxNormSquared = M.foldl' (\a b -> max a b) 0 $! M.map (\coeff -> normSquared coeff) ketMap
+            normSquared cn = (magnitude cn) P.^ 2
+            norm :: Double
+            norm = sqrt $! maxNormSquared
+
+{-
+-- Will have to encode positionRange in Position to be able to traverse index map
+instance NormalizeVector (InfKet (Complex Double) Position) where
+    normalizeVector ket@(InfKet coeffMap) = (1 / (norm :+ 0)) *^ ket
+        where
+            -- ketNormSquared = foldl' (P.+) 0 $! map (normSquared .coeffMap) positionRange
+            -- normalizing with max of norms instead of sum of squares of norm to make the states more visible in simulation
+            maxNormSquared = foldl' (\a b -> max a b) 0 $! map (normSquared .coeffMap) positionRange
+            normSquared cn = (magnitude cn) P.^ 2
+            norm :: Double
+            norm = sqrt $! maxNormSquared
+-}
+
+        
+instance NormalizeVector (LatticeKet (Complex Double) Position) where
+    normalizeVector ket@(LatticeKet array) = (1 / (norm :+ 0)) *^ ket
+        where
+            -- ketNormSquared = R.foldlAllS (P.+) 0 $! R.map (\coeff -> normSquared coeff) array
+            -- normalizing with max of norms instead of sum of squares of norm to make the states more visible in simulation
+            maxNormSquared = R.foldAllS (\a b -> max a b) 0 $! R.map (\coeff -> normSquared coeff) array
+            normSquared cn = (magnitude cn) P.^ 2
+            norm :: Double
+            norm = sqrt $! maxNormSquared
+
+
+
+  
+-- Hermitian Inner Product
+instance (InnerProductSpace (Complex Double) (SparseKet (Complex Double) Position)) where
+    (<.>) (SparseKet coeffA) (SparseKet coeffB) = M.foldl' (+) 0 $! M.intersectionWith (\ampA ampB -> ampA * (complexConjugate ampB)) coeffA coeffB
+
 
 
 -------------------
 -- For field instance of Complex Double
 
 instance Euclidean (Complex Double) where degree _ = Just 1
-instance Division (Complex Double)
+instance Division (Complex Double) where (/) = (P./)
 instance PID (Complex Double)
 instance UFD (Complex Double)
 instance GCDDomain (Complex Double)
@@ -96,7 +558,7 @@ instance Semiring (Complex Double)
 instance Additive (Complex Double) where (+) = (P.+)
 instance DecidableAssociates (Complex Double) where isAssociate = (==)
 instance Rig (Complex Double)
-instance Group (Complex Double)
+instance Group (Complex Double) where (-) = (P.-)
 instance LeftModule Natural (Complex Double) where
     n .* m = (fromIntegral $ toInteger n) P.* m
 instance RightModule Natural (Complex Double) where
@@ -108,243 +570,47 @@ instance RightModule Integer (Complex Double) where
 instance Abelian (Complex Double)
 
 
--- For use by repa
-instance Elt (Complex Double) where
-    touch (a :+ b) = touch a >> touch b 
-
 
 
 --------------
+-- For field instance of Double
 
-type Position = (Int, Int)
-
-positionRange :: [Position]
-positionRange = [(x,y) | x <- [(-halfWidth) .. halfWidth], y <- [-(halfHeight) .. halfHeight]]
-
-
--------------
--- Using index functions
-
-{-
-posXOp :: InfOperator (Complex Double) Position
-posXOp = InfOperator $ \(x,y) -> M.fromList [((x,y), (fromIntegral x) :+ 0) ]
- 
-posYOp :: InfOperator (Complex Double) Position
-posYOp = InfOperator $ \(x,y) -> M.fromList [((x,y), (fromIntegral y) :+ 0)]
-
-momXOp :: InfOperator (Complex Double) Position
--- taking dx as 1
-momXOp = InfOperator $ \(x,y) -> M.fromList [ ( (x P.- 1, y), (0 :+ (plankConstant)) ),
-                                              ( (x P.+ 1, y), (0 :+ (-(plankConstant))) )
-                                            ]
-
-momYOp :: InfOperator (Complex Double) Position
--- taking dy as 1
-momYOp = InfOperator $ \(x,y) -> M.fromList [ ( (x,y P.- 1), 0 :+ (plankConstant) ),
-                                              ( (x,y P.+ 1), 0 :+ (-(plankConstant)) )
-                                            ]
-
-scOp :: (Complex Double) -> InfOperator (Complex Double) Position
-scOp scalar = InfOperator $! \pos -> M.fromList [ (pos, scalar) ]
-
-
-oscillationOperator :: Double -> InfOperator (Complex Double) Position
-oscillationOperator dt = trace "OperationEnding" $! (scOp $! 1 :+ 0) + ((scOp $! 0 :+ (0 P.- (dt P./ plankConstant))) *
-                                                   (
-                                                     ( (momXOp `pow1p` 2) + (momYOp `pow1p` 2) * (scOp $ (1 P./ (2 P.* particleMass)) :+ 0) ) +
-                                                     ( (posXOp `pow1p` 2) + (posYOp `pow1p` 2) * (scOp $ ((particleMass P./ 2) P.* oscillatorFrequency P.^ 2) :+ 0) )
-                                                   )
-                                                )
-
-initialModel :: InfKet (Complex Double) Position
-initialModel = InfKet $! \pos -> if pos == initialParticlePosition then 1 else 0
-
-drawing :: InfKet (Complex Double) Position -> Picture
-drawing (InfKet coeffMap) = trace "Drawing" $
-  pictures $ map (\(x,y) -> translate (fromIntegral x) (fromIntegral y) $!
-                            color (withAlpha (double2Float $! normSquared $! coeffMap (x,y)) red) $!
-                            circleSolid 1
-                 ) $ pixels
-    where pixels = positionRange
-          normSquared cn = (magnitude cn) P.^ 2
-
--}
+instance Euclidean Double where degree _ = Just 1
+instance Division Double where (/) = (P./)
+instance PID Double
+instance UFD Double
+instance GCDDomain Double
+instance IntegralDomain Double
+instance Unital Double where one = 1
+instance DecidableZero Double where isZero = (0 ==)
+instance ZeroProductSemiring Double
+instance Commutative Double
+instance Multiplicative Double where (*) = (P.*)
+instance DecidableUnits Double where recipUnit a = case a of
+                                                       1 -> Just a
+                                                       -1 -> Just a
+                                                       _ -> Nothing
+instance UnitNormalForm Double
+instance Ring Double
+instance Monoidal Double where zero = 0
+instance Semiring Double
+instance Additive Double where (+) = (P.+)
+instance DecidableAssociates Double where isAssociate = (==)
+instance Rig Double
+instance Group Double where (-) = (P.-)
+instance LeftModule Natural Double where
+    n .* m = (fromIntegral $ toInteger n) P.* m
+instance RightModule Natural Double where
+    m *. n = m P.* (fromIntegral n)
+instance LeftModule Integer Double where
+    n .* m = (fromIntegral $ toInteger n) P.* m
+instance RightModule Integer Double where
+    m *. n = m P.* (fromIntegral n)
+instance Abelian Double
 
 
 
-------------------
--- Using arrays and matrices
-
-
--- Helper functions to translate between two dimensional position and one dimensional array
-
-indexRange :: Int
-indexRange = (2 * halfWidth + 1) * (2 * halfHeight + 1)
-
-positionToIndex :: Position -> Int
-positionToIndex pos = (fst pos + halfWidth) * (2 * halfHeight + 1) + (snd pos + halfHeight)
-
-indexToPosition :: Int -> Position
-indexToPosition index = ( (floor ((fromIntegral index) P./ (fromIntegral $! 2 * halfHeight + 1))) - halfWidth
-                        , (index `mod` (2 * halfHeight + 1)) - halfHeight
-                        )
-
-
--- position and momentum operators
-
-posXOp :: LatticeOperator (Complex Double) Position
-posXOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> if i==j
-                                                                                          then (fromIntegral $! fst $! indexToPosition i) :+ 0
-                                                                                          else 0
-                                                                           )
-  
-posYOp :: LatticeOperator (Complex Double) Position
-posYOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> if i==j
-                                                                                          then (fromIntegral $! snd $! indexToPosition i) :+ 0
-                                                                                          else 0
-                                                                           )
-  
-momXOp :: LatticeOperator (Complex Double) Position
-momXOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> let xo = fst $! indexToPosition j
-                                                                                              yo = snd $! indexToPosition j
-                                                                                              xn = fst $! indexToPosition i
-                                                                                              yn = snd $! indexToPosition i
-                                                                                          in
-                                                                                            case yn==yo of
-                                                                                              False -> 0
-                                                                                              True
-                                                                                                -- taking dx as 1
-                                                                                                |xn == xo P.+ 1 -> 0 :+ (plankConstant)
-                                                                                                |xn == xo P.- 1 -> 0 :+ (-(plankConstant))
-                                                                                                |otherwise -> 0
-                                                                           )
-
-momYOp :: LatticeOperator (Complex Double) Position
-momYOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> let xo = fst $! indexToPosition j
-                                                                                              yo = snd $! indexToPosition j
-                                                                                              xn = fst $! indexToPosition i
-                                                                                              yn = snd $! indexToPosition i
-                                                                                          in
-                                                                                            case xn==xo of
-                                                                                              False -> 0
-                                                                                              True
-                                                                                                -- taking dy as 1
-                                                                                                |yn == yo P.+ 1 -> 0 :+ (plankConstant)
-                                                                                                |yn == yo P.- 1 -> 0 :+ (-(plankConstant))
-                                                                                                |otherwise -> 0
-                                                                           )
-
--- a scalar operator or scalar multiplication
--- can make operators instances of Module and remove this
-scOp :: (Complex Double) -> LatticeOperator (Complex Double) Position
-scOp scalar = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> case i==j of
-                                                                                                   False -> 0
-                                                                                                   True -> scalar
-                                                                                )
-  
-
-oscillationOperator :: Double -> LatticeOperator (Complex Double) Position
-oscillationOperator dt = trace "OperationEnding" $!
-      (scOp $! 1 :+ 0) + ( (scOp $! 0 :+ (0 P.- (dt P./ plankConstant))) *
-                           (
-                             ( ( (momXOp `pow1p` 2) + (momYOp `pow1p` 2) ) * (scOp $ (1 P./ (2 P.* particleMass)) :+ 0) ) +
-                             ( ( (posXOp `pow1p` 2) + (posYOp `pow1p` 2) ) * (scOp $ ((particleMass P./ 2) P.* oscillatorFrequency P.^ 2) :+ 0) )
-                           )
-                         )
-
-initialModel :: LatticeKet (Complex Double) Position
-initialModel = LatticeKet $! R.fromFunction (Z :. indexRange) (\(Z:.i) -> if ( i == positionToIndex initialParticlePosition )
-                                                                          then 1
-                                                                          else 0
-                                                              )
-
-
-drawing :: LatticeKet (Complex Double) Position -> Picture
-drawing (LatticeKet vector) = trace "Drawing" $
-  pictures $ map (\(x,y) -> translate (fromIntegral x) (fromIntegral y) $!
-                            color (withAlpha (double2Float $ normSquared $! (vector R.! ( Z:.(positionToIndex (x,y))))) red) $!
-                            circleSolid 1
-                 ) $ pixels
-    where pixels = positionRange
-          normSquared cn = (magnitude cn) P.^ 2
-
-
-
-textSimulateOscillation :: IO ()
-textSimulateOscillation = do
-    return $! trace "Start Calculating Operator." ()
-    operator <- return $ oscillationOperator $! (1 P./ (fromIntegral fps)) P.* timeFactor
-    print $! runIdentity $! R.computeUnboxedP $! unLatticeOperator $! operator
-    return $! trace "Finish Calculating Operator." ()
-    go operator initialModel
-
-    where
-      go :: LatticeOperator (Complex Double) Position -> LatticeKet (Complex Double) Position -> IO ()
-      go operator ket@(LatticeKet vector) = do
-              _ <- return $! runIdentity $! R.computeUnboxedP $! vector
-              print "Done"
-              threadDelay 1000000
-              -- need to normalize the vector
-              let nextVector = operator `op` ket 
-              go operator nextVector
-
-
------------------------------------------
--- final simulator function
--- common to funcion and array methods
-
-simulateOscillation :: IO ()
-simulateOscillation = do
-    -- computing the operator
-    return $! trace "Start Calculating Operator." ()
-    operator <- return $ oscillationOperator $! (1 P./ (fromIntegral fps)) P.* timeFactor
-    return $! trace "Finish Calculating Operator." ()
-    simulate window
-             black
-             fps
-             initialModel
-             drawing
-             (simulation operator)
-    where
-        -- need to normalize the vector after operator action
-        simulation operator _ _ ket = trace "Simulating" $! operator `op` ket
-
-
-
-------------------------
--- Configuration
-
--- scaling length dimension by 10^9 so that 1 corresponds to i nm
-plankConstant :: Double
-plankConstant = 6.62607004e-16
-
--- roughly mass of an electron
-particleMass :: Double
-particleMass = 10e-31
-
-oscillatorFrequency :: Double
-oscillatorFrequency = 100
-
-halfWidth :: Int
-halfWidth = 1
-
-halfHeight :: Int
-halfHeight = 1
-
-window :: Display
-window = InWindow "Nice Window" (2*halfWidth, 2*halfHeight) (halfWidth, halfHeight)
-
-background :: Color
-background = black
-
-fps :: Int
-fps = 1
-
-initialParticlePosition :: Position
-initialParticlePosition = (1,0)
-
--- simulation will play 10 times slower than real time
--- mainly to keep time steps small
--- while keeping fps less
-timeFactor :: Double
-timeFactor = 0.01
+---------------
+-- For use by repa
+instance Elt (Complex Double) where
+    touch (a :+ b) = touch a >> touch b 

@@ -1,11 +1,11 @@
-{-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, UndecidableInstances, GADTs, TypeOperators #-}
+{-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, UndecidableInstances, GADTs, TypeOperators, FlexibleContexts #-}
 
 module Physics.Quantum.Algebra where
 
 import Numeric.Field.Class          (Field)
 import Numeric.Algebra.Class        (LeftModule((.*)), Multiplicative((*)), Monoidal(zero))
 import Numeric.Additive.Class       (Additive((+)))
-
+import Numeric.Algebra.Unital       (Unital(one))
 
 import Prelude hiding ((+), (*), Complex)
 
@@ -13,10 +13,13 @@ import qualified Data.Map as M
 import qualified Data.List as L
 import Data.Maybe (catMaybes)
 
+import Data.Complex                 (Complex, conjugate)
 
 import qualified Data.Array.Repa as R
 import qualified Data.Array.Repa.Eval as R
 import qualified Data.Array.Repa.Repr.Unboxed as R
+import qualified Data.Array.Repa.Repr.Vector as R
+
 import Data.Functor.Identity (runIdentity)
 
 
@@ -88,7 +91,10 @@ class (DualVectors k cv v, SimpleOperator k v o) => Operator k v cv o | o -> k w
 class IsComplex a where
     complexConjugate :: a -> a
 
+instance Num a => IsComplex (Complex a) where
+    complexConjugate = conjugate
 
+    
 ----------------------------------
 -- Constructions of vector spaces
 
@@ -99,6 +105,7 @@ class IsComplex a where
 -- sparse kets have finite number of non zero entries
 data SparseKet k m where
     SparseKet :: (Field k, Ord m) => M.Map m k -> SparseKet k m
+
     
 unSparseKet :: SparseKet k m -> M.Map m k
 unSparseKet (SparseKet ketMap) = ketMap
@@ -119,6 +126,11 @@ data LatticeKet k m = LatticeKet { unLatticeKet :: R.Array R.D R.DIM1 k }
 data LatticeBra k m = LatticeBra { unLatticeBra :: R.Array R.D R.DIM1 k }
 
 
+instance (Show k, Show m) => Show (SparseKet k m) where
+    show ket@(SparseKet map)  = show map
+
+instance (Show k, Show m) => Show (SparseBra k m) where
+    show ket@(SparseBra map)  = show map
 
 instance (Ord m, Field k) => Additive (SparseKet k m) where
     (+) (SparseKet a) (SparseKet b) = SparseKet $ M.unionWith (+) a b
@@ -158,6 +170,18 @@ instance (Field k, IsComplex k) => DualVectors k (InfBra k m) (InfKet k m) where
     dual (InfBra a) = InfKet $ \x -> complexConjugate $ a x
 
 
+instance (Show k, Show m) => Show (LatticeKet k m) where
+    -- Delayed representation doesn't have show instance
+    show ket@(LatticeKet vec) = show $! compute vec
+        where compute :: Show k => R.Array R.D R.DIM1 k -> R.Array R.V R.DIM1 k
+              compute = R.computeS
+
+instance (Show k, Show m) => Show (LatticeBra k m) where
+    -- Delayed representation doesn't have show instance
+    show ket@(LatticeBra vec) = show $! compute vec
+        where compute :: Show k => R.Array R.D R.DIM1 k -> R.Array R.V R.DIM1 k
+              compute = R.computeS
+
 instance Field k => Additive (LatticeKet k m) where
    (+) (LatticeKet a) (LatticeKet b) = LatticeKet $! R.zipWith (+) a b
 
@@ -184,7 +208,7 @@ instance (Field k, IsComplex k) => DualVectors k (LatticeBra k m) (LatticeKet k 
 -- Operator formed from outerproduct of two vectors
 data OuterOperator k v cv where
     OuterOperator :: (InnerProductSpace k v, DualVectors k cv v) => [(v, cv)] -> OuterOperator k v cv
-   
+    
 unOuterOperator :: OuterOperator k v cv -> [(v, cv)]
 unOuterOperator (OuterOperator outerProducts) = outerProducts
 
@@ -205,33 +229,91 @@ instance Additive (OuterOperator k v cv) where
 
 
 
+
 -- a sparse operator represented as a map from (i,j) to coefficient of |i><j|
+-- Note that (|i><j|) |k> = <j|k> |i> and therefore the operation requires inner product to be defined
 data SparseOperator k m = SparseOperator { unSparseOperator :: M.Map (m, m) k }
+
 
 instance ( Field k, Ord m,
            InnerProductSpace k (SparseKet k m),
            DualVectors k (SparseBra k m) (SparseKet k m)
          )
-         => SimpleOperator k (SparseKet k m) (SparseOperator k m) where
-  
-    op (SparseOperator opMap) ket = SparseKet $ M.fromListWith (+) $
+         => SimpleOperator k (SparseKet k m) (SparseOperator k m) where  
+    op (SparseOperator opMap) ket = SparseKet $! M.fromListWith (+) $!
         map (\(veci, coveci) -> ( veci
-                                , (SparseBra $ M.fromListWith (+) $ catMaybes $ [fmap ((,) coveci) $ M.lookup (veci, coveci) opMap]) <|> ket
+                                , (SparseBra $! M.fromListWith (+) $! catMaybes $! [fmap ((,) coveci) $! M.lookup (veci, coveci) opMap]) <|> ket
                                 )
-            ) $
+            ) $!
             (M.keys opMap) 
 
 instance ( Field k, Ord m,
            InnerProductSpace k (SparseKet k m),
            DualVectors k (SparseBra k m) (SparseKet k m)
          )
-         => Operator k (SparseKet k m) (SparseBra k m) (SparseOperator k m) where
-    (|><|) (SparseKet vecMap) (SparseBra covecMap) = SparseOperator $ M.fromListWith (+) $
+         => Operator k (SparseKet k m) (SparseBra k m) (SparseOperator k m) where  
+    (|><|) (SparseKet vecMap) (SparseBra covecMap) = SparseOperator $! M.fromListWith (+) $!
         catMaybes [(,) (i,j) <$> (fmap (*) (M.lookup i vecMap) <*> (M.lookup j covecMap)) | i <- M.keys vecMap, j <- M.keys covecMap ]
 
+instance ( Field k, Ord m,
+           InnerProductSpace k (SparseKet k m),
+           DualVectors k (SparseBra k m) (SparseKet k m)
+         )
+         => Additive (SparseOperator k m) where  
+    (+) (SparseOperator a) (SparseOperator b) = SparseOperator $! M.unionWith (+) a b
+
+instance ( Field k, Ord m,
+           InnerProductSpace k (SparseKet k m),
+           DualVectors k (SparseBra k m) (SparseKet k m)
+         )
+         => Multiplicative (SparseOperator k m) where  
+     (*) (SparseOperator a) (SparseOperator b) = SparseOperator $! M.fromListWith (+) $! multiplyMaps a b []
+         where
+             -- chaoose one index i and sum (over j and k) |j><i| |i><k|
+             multiplyMaps :: ( Field k, Ord m,
+                               InnerProductSpace k (SparseKet k m),
+                               DualVectors k (SparseBra k m) (SparseKet k m)
+                             )
+                             => M.Map (m,m) k -> M.Map (m,m) k -> [((m,m), k)] -> [((m,m), k)]
+             multiplyMaps mapA mapB oldResult = case null mapA || null mapB of
+                 True -> oldResult
+                 False ->
+                   -- toList uses list fusion so this should not go through entire map
+                   let oneElement = L.take 1 $ M.toList $ mapA
+                   in case oneElement of
+                          [] -> oldResult
+                          elementToUse : _ -> let indexToUse = (snd $! fst elementToUse)
+
+                                                  -- <i|i>
+                                                  indexKet = SparseKet $! M.singleton indexToUse one
+                                                  indexSquaredNorm =  indexKet <.> indexKet
+
+                                                  -- take all keys from mapA which have this index in snd of key
+                                                  (mapAToUse, mapAToPass) = M.partitionWithKey (\key _ -> snd key == indexToUse) mapA
+                                                  -- take all keys from mapA which have this index in snd of key
+                                                  (mapBToUse, mapBToPass) = M.partitionWithKey (\key _ -> fst key == indexToUse) mapB
+
+                                                  -- we can discard second index from mapAToUse and first index from mapBToUse
+                                                  -- we also know that the preserved indices will occur uniquely in index
+                                                  -- so we can just take the cross product
+                                                  listAToUse = M.toList $! mapAToUse
+                                                  listBToUse = M.toList $! mapBToUse
+                                                  newResult = [((a,b), va * vb * indexSquaredNorm) | ((a,_), va) <- listAToUse,
+                                                                                                     ((_,b), vb) <- listBToUse
+                                                                                                   ]
+
+                                              in multiplyMaps mapAToPass mapBToPass $! newResult ++ oldResult
+
+instance ( Field k, Ord m,
+           InnerProductSpace k (SparseKet k m),
+           DualVectors k (SparseBra k m) (SparseKet k m)
+         )
+         => LeftModule k (SparseOperator k m) where
+    (.*) scalar (SparseOperator b) = SparseOperator $! M.map (scalar *) b
 
 
--- a more general operator represened as a map from j to Map i_n s_n where operator takes |i_n> to s_n |j>
+
+-- a more general operator represented as a map from j to Map i_n s_n where operator takes |i_n> to s_n |j>
 -- this construct may not suffice when there are uncountable such i_n
 data InfOperator k m = InfOperator { unInfOperator :: m -> M.Map m k }
 
@@ -253,17 +335,23 @@ instance (Field k, Ord m) => Multiplicative (InfOperator k m) where
 -- A matrix to transfom LatticeKet vector
 data LatticeOperator k m = LatticeOperator { unLatticeOperator :: R.Array R.D R.DIM2 k }
 
+-- Num k is required because of sumP in method definition
 instance (Field k, R.Elt k, R.Unbox k, Num k) => SimpleOperator k (LatticeKet k m) (LatticeOperator k m) where
     op (LatticeOperator matrix) (LatticeKet vector) = LatticeKet $! R.delay $! runIdentity $! mvMultP matrix vector
 
 instance (Field k) => Additive (LatticeOperator k m) where
     (+) (LatticeOperator op1) (LatticeOperator op2) = LatticeOperator $! R.zipWith (+) op1 op2
 
+-- Num k is required because of sumP in method definition
 instance (Field k, R.Elt k, R.Unbox k, Num k) => Multiplicative (LatticeOperator k m) where
     (*) (LatticeOperator op1) (LatticeOperator op2) = LatticeOperator $! R.delay $! runIdentity $! mmMultP op1 op2
 
+instance Field k => LeftModule k (LatticeOperator k m) where
+    (.*) scalar (LatticeOperator matrix) = LatticeOperator $! R.map (scalar *) matrix
 
--- Taken from Repa wiki, attempt to extend it to more Additive and Multiplicative structures
+
+
+-- Taken from Repa wiki, extended it to Additive and Multiplicative structures
 mmMultP :: (Monad m, R.Source r k, Additive k, Multiplicative k, R.Elt k, R.Unbox k, Num k)
         => R.Array r R.DIM2 k
         -> R.Array r R.DIM2 k
