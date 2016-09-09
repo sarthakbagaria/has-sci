@@ -32,7 +32,7 @@ import GHC.Float                       (double2Float)
 import Data.Array.Repa.Eval            (Elt(touch))
 
   
-import Data.Complex                    (Complex(..), magnitude)
+import Data.Complex                    (Complex(..), magnitude, realPart)
 
 import Prelude hiding ((+),(-),(/),(*), (^))
 import qualified Prelude as P 
@@ -41,6 +41,13 @@ import qualified Data.Map as M
 import qualified Data.Array.Repa as R
 import Data.Array.Repa                              (Z(..), (:.)(..))
 import Data.Functor.Identity (runIdentity)
+
+import qualified Data.Eigen.SparseMatrix as ES
+import Data.Eigen.Matrix                            (CComplex)
+import Foreign.C.Types                              (CDouble)
+
+import Data.Maybe                                   (catMaybes)
+import qualified Data.List as L
 
 import Graphics.Gloss
 import Graphics.Gloss.Data.ViewPort                 (ViewPort)
@@ -129,6 +136,129 @@ indexToPositionConfig config index = Position ( (floor ((fromIntegral index) P./
     where halfWidth = halfWidthConfig config
           halfHeight = halfHeightConfig config
   
+
+
+
+
+------------------------------------
+-- simulate oscillation using Eigen library's sparse matrices
+-- most performant simulator
+-- can work for around haldwidth=100, halfHeight=100 in less than a second
+------------------------------------
+
+
+sparseMatModelSimulator :: OscillatorInABoxConfig
+                        -> ( TimeStep -> SparseMatOperator (Complex Double) (CComplex CDouble) Position
+                           , SparseMatKet (Complex Double) (CComplex CDouble) Position
+                           , SparseMatKet (Complex Double) (CComplex CDouble) Position -> Picture
+                           , OscillatorInABoxConfig
+                           ) 
+sparseMatModelSimulator config = (oscillationOperator, initialModel, drawing, config)
+    where
+        -- shorthands for config params
+        positionRange = positionRangeConfig config
+        halfWidth = halfWidthConfig config
+        halfHeight = halfHeightConfig config
+        indexRange = indexRangeConfig config
+
+        positionToIndex = positionToIndexConfig config
+        indexToPosition = indexToPositionConfig config
+
+        plankConstant = plankConstantConfig config
+        particleMass = particleMassConfig config
+        oscillatorFrequency = oscillatorFrequencyConfig config
+        
+        initialAmplitude = initialAmplitudeConfig config
+        
+      
+        -- position and momentum operators
+        
+        posXOp :: SparseMatOperator (Complex Double) (CComplex CDouble) Position
+        posXOp = SparseMatOperator $! ES.fromList indexRange indexRange $! map (\pos@(Position x _) -> (positionToIndex pos, positionToIndex pos, fromIntegral x)) positionRange
+
+        posYOp :: SparseMatOperator (Complex Double) (CComplex CDouble) Position
+        posYOp = SparseMatOperator $! ES.fromList indexRange indexRange $! map (\pos@(Position _ y) -> (positionToIndex pos, positionToIndex pos, fromIntegral y)) positionRange
+
+        momXOp :: SparseMatOperator (Complex Double) (CComplex CDouble) Position
+        -- taking dx as 1
+        momXOp = SparseMatOperator $! ES.fromList indexRange indexRange $! ( (map (\pos@(Position x y) -> ( positionToIndex (Position (x P.+ 1) y)
+                                                                                                          , positionToIndex pos
+                                                                                                          , 0 :+ (  plankConstant)
+                                                                                                          )
+                                                                                  )
+                                                                              -- removing max x from position range to keeo operator within lattice
+                                                                              [Position i j | i <- [(-halfWidth) .. (halfWidth-1)], j <- [-(halfHeight) .. halfHeight]]
+                                                                             )
+                                                                             ++
+                                                                             (map (\pos@(Position x y) -> ( positionToIndex (Position (x P.- 1) y)
+                                                                                                          , positionToIndex pos
+                                                                                                          , 0 :+ (- plankConstant)
+                                                                                                          )
+                                                                                  )
+                                                                              -- removing min x from position range to keeo operator within lattice
+                                                                              [Position i j | i <- [-(halfWidth-1) .. (halfWidth)], j <- [-(halfHeight) .. halfHeight]]
+                                                                             )
+                                                                           )
+        
+        momYOp :: SparseMatOperator (Complex Double) (CComplex CDouble) Position
+        -- taking dy as 1
+        momYOp = SparseMatOperator $! ES.fromList indexRange indexRange $! ( (map (\pos@(Position x y) -> ( positionToIndex (Position x (y P.+ 1))
+                                                                                                          , positionToIndex pos
+                                                                                                          , 0 :+ (  plankConstant)
+                                                                                                          )
+                                                                                  )
+                                                                              -- removing max y from position range to keeo operator within lattice
+                                                                              [Position i j | i <- [(-halfWidth) .. (halfWidth)], j <- [-(halfHeight) .. (halfHeight-1)]]
+                                                                             )
+                                                                             ++
+                                                                             (map (\pos@(Position x y) -> ( positionToIndex (Position x (y P.- 1))
+                                                                                                          , positionToIndex pos
+                                                                                                          , 0 :+ (- plankConstant)
+                                                                                                          )
+                                                                                  )
+                                                                              -- removing min y from position range to keeo operator within lattice
+                                                                              [Position i j | i <- [(-halfWidth) .. (halfWidth)], j <- [-(halfHeight-1) .. halfHeight]]
+                                                                             )
+                                                                           )
+
+        momSquaredOp = (momXOp `pow1p` 2) + (momYOp `pow1p` 2)
+        posSquaredOp = (posXOp `pow1p` 2) + (posYOp `pow1p` 2)
+          
+
+        idOp :: SparseMatOperator (Complex Double) (CComplex CDouble) Position
+        idOp = SparseMatOperator $! ES.fromList indexRange indexRange $! map (\pos@(Position _ _) -> (positionToIndex pos, positionToIndex pos, 1)) positionRange
+
+
+        oscillationOperator :: Double -> SparseMatOperator (Complex Double) (CComplex CDouble) Position
+        oscillationOperator dt =
+              idOp + ( (0 :+ (0 P.- (dt P./ plankConstant))) .*
+                       (
+                         ( (((particleMass P./ 2) P.* (oscillatorFrequency P.^ 2)) :+ 0) .* posSquaredOp ) +
+                         ( ((1 P./ (2 P.* particleMass)) :+ 0)                           .* momSquaredOp )
+                       )
+                     )
+
+          
+        initialModel :: SparseMatKet (Complex Double) (CComplex CDouble) Position
+        initialModel = normalizeVector $! SparseMatKet $! ES.fromList indexRange 1 $! map ( \pos@(Position x y) -> ( positionToIndex pos
+                                                                                                                   , 0
+                                                                                                                   , initialAmplitude pos
+                                                                                                                   )
+                                                                                          ) positionRange
+
+
+        drawing :: SparseMatKet (Complex Double) (CComplex CDouble) Position -> Picture
+        drawing (SparseMatKet mat) = {- trace "Drawing" $ -} 
+            pictures $ catMaybes $ map (\elem -> case elem of
+                                           (index, 0, amp) -> let pos = indexToPosition index
+                                                              in Just $! translate (fromIntegral $! posX pos) (fromIntegral $! posY pos) $!
+                                                                 color (withAlpha (double2Float $! normSquared amp) red) $!
+                                                                 circleSolid 1
+                                           _ -> trace "OutOfBounds: " Nothing
+                                       ) $! ES.toList $! mat
+          where
+                normSquared cn = (magnitude cn) P.^ 2
+
 
 
 
@@ -230,6 +360,7 @@ sparseModelSimulator config = (oscillationOperator, initialModel, drawing, confi
 ------------------------------------
 -- Using repa arrays and matrices
 -- Matrix multiplication turns out to be the bottleneck
+-- Probably because it's not designed for sparse matrices
 -- can work for around halfWidth=2, halfHeight=2
 ------------------------------------
 
@@ -429,7 +560,7 @@ simulateOscillation :: (VectorSpace k v, SimpleOperator k v o, NormalizeVector v
 simulateOscillation oscillationOperator initialModel drawing config = do
     -- return $! trace "Start Calculating Operator." ()
     -- keeping fps constant to avoid recalculation of operator
-    operator <- return $! oscillationOperator $! 1 P./ (fromIntegral fps) P.* timeFactor
+    operator <- return $! oscillationOperator $! timeFactor P./ (fromIntegral fps)
     -- return $! trace "Finish Calculating Operator." ()
     simulate (InWindow "Nice Window" (2*halfWidth, 2*halfHeight) (halfWidth, halfHeight))
              black
@@ -458,7 +589,7 @@ textSimulateOscillation :: (VectorSpace k v, Show v, SimpleOperator k v o, Norma
                         -> IO ()
 textSimulateOscillation oscillationOperator initialModel config = do
     -- return $! trace "Start Calculating Operator." ()
-    operator <- return $ oscillationOperator $! 1 P./ (fromIntegral fps) P.* timeFactor
+    operator <- return $ oscillationOperator $! timeFactor P./ (fromIntegral fps)
     -- return $! trace "Finish Calculating Operator." ()
     go operator initialModel
 
@@ -523,6 +654,17 @@ instance NormalizeVector (LatticeKet (Complex Double) Position) where
             normSquared cn = (magnitude cn) P.^ 2
             norm :: Double
             norm = sqrt $! maxNormSquared
+
+
+instance NormalizeVector (SparseMatKet (Complex Double) (CComplex CDouble) Position) where
+    normalizeVector ket@(SparseMatKet mat) = (1 / (norm :+ 0)) *^ ket
+        where
+            norm :: Double
+            --norm = realPart $! ES.norm mat
+            --normalizing with max of norms instead of sum of squares of norm to make the states more visible in simulation
+            norm = L.maximum $ map (\(row, column, value) -> normSquared value) $ ES.toList $! mat
+            
+            normSquared cn = (magnitude cn) P.^ 2
 
 
 

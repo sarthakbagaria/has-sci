@@ -9,18 +9,29 @@ import Graphics.Gloss         (Picture)
 smallBoxConfig :: OscillatorInABoxConfig
 smallBoxConfig = OscillatorInABoxConfig { plankConstantConfig = 6.62607004e-16 -- scaling length dimension by 10^9 so that 1 corresponds to 1 nm
                                         , particleMassConfig = 10e-31 -- roughly mass of an electron
-                                        , oscillatorFrequencyConfig = 1000
-                                        , halfWidthConfig = 5
-                                        , halfHeightConfig = 5
-                                        , initialAmplitudeConfig = gaussianWave 0 0 1
-                                        , fpsConfig = 5
-                                        , timeFactorConfig = 0.1
+                                        , oscillatorFrequencyConfig = 10000
+                                        , halfWidthConfig = 10
+                                        , halfHeightConfig = 10
+                                        , initialAmplitudeConfig = gaussianWave 0 0 2
+                                        , fpsConfig = 30
+                                        , timeFactorConfig = 0.5
                                         }
 
+bigBoxConfig :: OscillatorInABoxConfig
+bigBoxConfig = OscillatorInABoxConfig { plankConstantConfig = 6.62607004e-16 -- scaling length dimension by 10^9 so that 1 corresponds to 1 nm
+                                      , particleMassConfig = 10e-25
+                                      , oscillatorFrequencyConfig = 10e7
+                                      , halfWidthConfig = 100
+                                      , halfHeightConfig = 100
+                                      , initialAmplitudeConfig = gaussianWave 30 30 30
+                                      , fpsConfig = 1
+                                      , timeFactorConfig = 0.01
+                                      }
+  
 
 
 main :: IO ()
-main  = tupleToArgs simulateOscillation $! sparseModelSimulator smallBoxConfig
+main  = tupleToArgs simulateOscillation $! sparseMatModelSimulator smallBoxConfig
 --main = tupleToArgs simulateOscillation $! arrayModelSimulator smallBoxConfig
 
 

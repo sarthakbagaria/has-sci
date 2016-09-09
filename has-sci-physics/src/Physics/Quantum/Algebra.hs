@@ -22,6 +22,11 @@ import qualified Data.Array.Repa.Repr.Vector as R
 
 import Data.Functor.Identity (runIdentity)
 
+import qualified Data.Eigen.SparseMatrix as ES
+import qualified Data.Eigen.Matrix as E
+
+
+
 
 
 -- a vector space m over field k
@@ -117,15 +122,6 @@ unSparseBra :: SparseBra k m -> M.Map m k
 unSparseBra (SparseBra braMap) = braMap
 
 
-data InfKet k m = InfKet { unContKet :: (m -> k) }
-data InfBra k m = InfBra { unContBra :: (m -> k) }
-
-
--- a vector of coefficients at lattice points
-data LatticeKet k m = LatticeKet { unLatticeKet :: R.Array R.D R.DIM1 k }
-data LatticeBra k m = LatticeBra { unLatticeBra :: R.Array R.D R.DIM1 k }
-
-
 instance (Show k, Show m) => Show (SparseKet k m) where
     show ket@(SparseKet map)  = show map
 
@@ -151,6 +147,12 @@ instance (Field k, IsComplex k, Ord m) => DualVectors k (SparseBra k m) (SparseK
     dual (SparseBra a) = SparseKet $ M.map complexConjugate a
 
 
+
+-- very generic mappings
+data InfKet k m = InfKet { unContKet :: (m -> k) }
+data InfBra k m = InfBra { unContBra :: (m -> k) }
+
+
 instance Field k => Additive (InfKet k m) where
     (+) (InfKet a) (InfKet b) = InfKet $ \x -> a x + b x
 
@@ -170,15 +172,21 @@ instance (Field k, IsComplex k) => DualVectors k (InfBra k m) (InfKet k m) where
     dual (InfBra a) = InfKet $ \x -> complexConjugate $ a x
 
 
+
+-- a vector of coefficients at lattice points
+data LatticeKet k m = LatticeKet { unLatticeKet :: R.Array R.D R.DIM1 k }
+data LatticeBra k m = LatticeBra { unLatticeBra :: R.Array R.D R.DIM1 k }
+
+
 instance (Show k, Show m) => Show (LatticeKet k m) where
     -- Delayed representation doesn't have show instance
-    show ket@(LatticeKet vec) = show $! compute vec
+    show (LatticeKet vec) = show $! compute vec
         where compute :: Show k => R.Array R.D R.DIM1 k -> R.Array R.V R.DIM1 k
               compute = R.computeS
 
 instance (Show k, Show m) => Show (LatticeBra k m) where
     -- Delayed representation doesn't have show instance
-    show ket@(LatticeBra vec) = show $! compute vec
+    show (LatticeBra vec) = show $! compute vec
         where compute :: Show k => R.Array R.D R.DIM1 k -> R.Array R.V R.DIM1 k
               compute = R.computeS
 
@@ -199,6 +207,40 @@ instance (Field k, IsComplex k) => DualVectors k (LatticeKet k m) (LatticeBra k 
 
 instance (Field k, IsComplex k) => DualVectors k (LatticeBra k m) (LatticeKet k m) where
     dual (LatticeBra a) = LatticeKet $! R.map complexConjugate a
+
+
+
+-- n x 1 matrix
+data SparseMatKet k ck m where
+    SparseMatKet :: E.Elem k ck => ES.SparseMatrix k ck -> SparseMatKet k ck m
+    
+unSparseMatKet :: SparseMatKet k ck m -> ES.SparseMatrix k ck
+unSparseMatKet (SparseMatKet mat) = mat
+
+data SparseMatBra k ck m where
+    SparseMatBra :: E.Elem k ck => ES.SparseMatrix k ck -> SparseMatBra k ck m
+    
+unSparseMatBra :: SparseMatBra k ck m -> ES.SparseMatrix k ck
+unSparseMatBra (SparseMatBra mat) = mat
+
+
+instance (Show k) => Show (SparseMatKet k ck m) where
+    show (SparseMatKet mat) = show mat
+
+instance (Show k) => Show (SparseMatBra k ck m) where
+    show (SparseMatBra mat) = show mat  
+
+instance Additive (SparseMatKet k ck m) where
+    (+) (SparseMatKet a) (SparseMatKet b) = SparseMatKet $! ES.add a b
+
+instance Additive (SparseMatBra k ck m) where
+    (+) (SparseMatBra a) (SparseMatBra b) = SparseMatBra $! ES.add a b
+
+instance Field k => VectorSpace k (SparseMatKet k ck m) where
+    (*^) s (SparseMatKet v) = SparseMatKet $! ES.scale s v
+ 
+instance Field k => VectorSpace k (SparseMatBra k ck m) where
+    (*^) s (SparseMatBra v) = SparseMatBra $! ES.scale s v
 
 
 -------------------------------------
@@ -332,23 +374,27 @@ instance (Field k, Ord m) => Multiplicative (InfOperator k m) where
                     M.toList $ op1 index
 
 
+
 -- A matrix to transfom LatticeKet vector
-data LatticeOperator k m = LatticeOperator { unLatticeOperator :: R.Array R.D R.DIM2 k }
+data LatticeOperator k m where
+    LatticeOperator :: (Field k, R.Elt k, R.Unbox k, Num k) => R.Array R.D R.DIM2 k -> LatticeOperator k m
+
+unLatticeOperator :: LatticeOperator k m -> R.Array R.D R.DIM2 k
+unLatticeOperator (LatticeOperator mat) = mat
 
 -- Num k is required because of sumP in method definition
-instance (Field k, R.Elt k, R.Unbox k, Num k) => SimpleOperator k (LatticeKet k m) (LatticeOperator k m) where
+instance Field k => SimpleOperator k (LatticeKet k m) (LatticeOperator k m) where
     op (LatticeOperator matrix) (LatticeKet vector) = LatticeKet $! R.delay $! runIdentity $! mvMultP matrix vector
 
-instance (Field k) => Additive (LatticeOperator k m) where
+instance Additive (LatticeOperator k m) where
     (+) (LatticeOperator op1) (LatticeOperator op2) = LatticeOperator $! R.zipWith (+) op1 op2
 
 -- Num k is required because of sumP in method definition
-instance (Field k, R.Elt k, R.Unbox k, Num k) => Multiplicative (LatticeOperator k m) where
+instance Multiplicative (LatticeOperator k m) where
     (*) (LatticeOperator op1) (LatticeOperator op2) = LatticeOperator $! R.delay $! runIdentity $! mmMultP op1 op2
 
 instance Field k => LeftModule k (LatticeOperator k m) where
     (.*) scalar (LatticeOperator matrix) = LatticeOperator $! R.map (scalar *) matrix
-
 
 
 -- Taken from Repa wiki, extended it to Additive and Multiplicative structures
@@ -378,3 +424,26 @@ mvMultP a b = R.sumP (R.zipWith (*) aRepl bRepl)
       bRepl = R.extend (R.Z R.:.rowsA R.:.R.All) b
       (R.Z R.:.rowsA R.:.colsA) = R.extent a
 
+
+
+
+-- A matrix to transfom LatticeKet vector
+data SparseMatOperator k ck m where
+    SparseMatOperator :: E.Elem k ck => ES.SparseMatrix k ck -> SparseMatOperator k ck m
+    
+unSparseMatOperator :: SparseMatOperator k ck m -> ES.SparseMatrix k ck
+unSparseMatOperator (SparseMatOperator mat) = mat
+
+
+-- Num k is required because of sumP in method definition
+instance Field k => SimpleOperator k (SparseMatKet k ck m) (SparseMatOperator k ck m) where
+    op (SparseMatOperator matrix) (SparseMatKet vector) = SparseMatKet $! ES.mul matrix vector
+
+instance Field k => Additive (SparseMatOperator k ck m) where
+    (+) (SparseMatOperator op1) (SparseMatOperator op2) = SparseMatOperator $! ES.add op1 op2
+
+instance Field k => Multiplicative (SparseMatOperator k ck m) where
+    (*) (SparseMatOperator op1) (SparseMatOperator op2) = SparseMatOperator $! ES.mul op1 op2
+
+instance Field k => LeftModule k (SparseMatOperator k ck m) where
+    (.*) scalar (SparseMatOperator matrix) = SparseMatOperator $! ES.scale scalar matrix

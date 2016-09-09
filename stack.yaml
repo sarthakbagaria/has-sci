@@ -7,7 +7,8 @@ packages:
 extra-deps:
   - gloss-1.10.2.3
   - algebra-4.3
-
+  - eigen-2.1.6
+  
 flags: {}
 
 extra-package-dbs: []
