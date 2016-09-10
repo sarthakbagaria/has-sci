@@ -41,7 +41,7 @@ instance ModifiableVelocity PointParticle Float where
 
 
 window :: Display
-window = InWindow "Nice Window" (500, 500) (250, 250)
+window = InWindow "Classical Gravity Simulator" (500, 500) (250, 250)
 
 background :: Color
 background = black

@@ -107,6 +107,31 @@ gaussianWave xCenter yCenter var = \pos@(Position x y) ->
 
 
 
+smallBoxConfig :: OscillatorInABoxConfig
+smallBoxConfig = OscillatorInABoxConfig { plankConstantConfig = 6.62607004e-16 -- scaling length dimension by 10^9 so that 1 corresponds to 1 nm
+                                        , particleMassConfig = 10e-31 -- roughly mass of an electron
+                                        , oscillatorFrequencyConfig = 10000
+                                        , halfWidthConfig = 10
+                                        , halfHeightConfig = 10
+                                          -- tune variance of wave based on mass and frequency (and Plank's constant) to get a nice simulation
+                                        , initialAmplitudeConfig = gaussianWave 0 0 3.8845e-6
+                                        , fpsConfig = 30
+                                        , timeFactorConfig = 0.5
+                                        }
+
+bigBoxConfig :: OscillatorInABoxConfig
+bigBoxConfig = OscillatorInABoxConfig { plankConstantConfig = 6.62607004e-16 -- scaling length dimension by 10^9 so that 1 corresponds to 1 nm
+                                      , particleMassConfig = 10e-31
+                                      , oscillatorFrequencyConfig = 10000
+                                      , halfWidthConfig = 100
+                                      , halfHeightConfig = 100
+                                        -- tune variance of wave based on mass and frequency (and Plank's constant) to get a nice simulation
+                                      , initialAmplitudeConfig = gaussianWave 0 0 3.8845e-6
+                                      , fpsConfig = 20
+                                      , timeFactorConfig = 0.5
+                                      }  
+
+
 ---------------------
 -- Helper functions to generate lattice and translate between two dimensional position and one dimensional array
 -- may not need to modify these
@@ -562,7 +587,7 @@ simulateOscillation oscillationOperator initialModel drawing config = do
     -- keeping fps constant to avoid recalculation of operator
     operator <- return $! oscillationOperator $! timeFactor P./ (fromIntegral fps)
     -- return $! trace "Finish Calculating Operator." ()
-    simulate (InWindow "Nice Window" (2*halfWidth, 2*halfHeight) (halfWidth, halfHeight))
+    simulate (InWindow "Quantum Oscillation Simulator" (2*halfWidth, 2*halfHeight) (halfWidth, halfHeight))
              black
              fps
              initialModel

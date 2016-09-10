@@ -36,7 +36,7 @@ library
 executable has-sci-physics-examples-exe
   hs-source-dirs:      app
   main-is:             Main.hs
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N -O2 -prof -fprof-auto
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N -O2
 
   build-depends:       base
                      , has-sci-physics
