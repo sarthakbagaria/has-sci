@@ -604,7 +604,6 @@ textSimulateOscillation oscillationOperator initialModel config = do
         go operator ket = do
                 print ket
                 threadDelay 1000000
-                -- TO DO:  normalize the vector
                 let nextMap = operator `op` ket 
                 go operator $! normalizeVector nextMap
 

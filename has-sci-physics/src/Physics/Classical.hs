@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeOperators, DataKinds, KindSignatures, MultiParamTypeClasses #-}
+{-# LANGUAGE TypeOperators, DataKinds, KindSignatures, MultiParamTypeClasses, GADTs, StandaloneDeriving #-}
 
 
 module Physics.Classical where
@@ -16,24 +16,29 @@ import Numeric.NumType.DK.Integers                  (pos2, pos3, TypeInt(Pos2, P
 -- Add electromagnetism and rotation
 -----------------
 
-data Floating a => Vec (b::D.Dimension) a = Vec { getVec :: (D.Quantity b a, D.Quantity b a) }
-    deriving Eq
+data Vec (b::D.Dimension) a where
+    Vec :: (Eq a, Floating a) => (D.Quantity b a, D.Quantity b a) -> Vec b a
+
+deriving instance Eq (Vec b a)
+
+getVec :: Vec b a -> (D.Quantity b a, D.Quantity b a)
+getVec (Vec vec) = vec
 
 
 -- vector addition
-(^+) :: Floating a => Vec b a -> Vec b a -> Vec b a
+(^+) :: Vec b a -> Vec b a -> Vec b a
 (^+) (Vec (x,y)) (Vec (l,m)) = Vec (x D.+ l, y D.+ m)
 
 -- vector subtraction
-(^-) :: Floating a => Vec b a -> Vec b a -> Vec b a
+(^-) :: Vec b a -> Vec b a -> Vec b a
 (^-) (Vec (x,y)) (Vec (l,m)) = Vec (x D.- l, y D.- m)
 
 -- scalar product with a product
-(*^) :: Floating a => D.Quantity b a -> Vec c a -> Vec (b D.* c) a
+(*^) :: D.Quantity b a -> Vec c a -> Vec (b D.* c) a
 (*^) x (Vec (l,m)) = Vec (x D.* l, x D.* m)
 
 -- scalar (dot) product of two vectors
-(.<) :: Floating a => Vec b a -> Vec c a -> D.Quantity (b D.* c) a
+(.<) :: Vec b a -> Vec c a -> D.Quantity (b D.* c) a
 (.<) (Vec (x,y)) (Vec (l,m)) = (x D.* l D.+ y D.* m)
 
 
@@ -48,19 +53,19 @@ type SpatialField a b = Vec D.DLength a -> b
 
 type GravityFieldUnit = D.DLength D./ D.DTime D.^ Pos2
 
-class Floating b => HasMass a b where
+class (Eq b, Floating b) => HasMass a b where
     mass :: a -> D.Mass b
 
-class Floating b => HasCenterOfGravity a b where
+class HasCenterOfGravity a b where
     centerOfGravity :: a -> Vec D.DLength b
 
-class Floating b => ModifiableCenterOfGravity a b where
+class ModifiableCenterOfGravity a b where
     changeCenterOfGravity :: Vec D.DLength b -> a -> a
 
-class Floating b => HasVelocity a b where
+class HasVelocity a b where
     velocity :: a -> Vec (D.DLength D./ D.DTime) b
 
-class Floating b => ModifiableVelocity a b where
+class ModifiableVelocity a b where
     changeVelocity :: Vec (D.DLength D./ D.DTime) b -> a -> a
 
 
@@ -70,9 +75,7 @@ gravitationalConstant :: Floating a => D.Quantity (D.DLength D.^ Pos3  D./ (D.DM
 gravitationalConstant = 6.673e-11 *~ (newton D.* meter D.^ pos2 D./ (kilo gram) D.^ pos2)
 
 
-nBodyGravitationField :: ( Floating e, Eq e
-                         , HasMass a e, HasCenterOfGravity a e
-                         ) => [a] -> SpatialField e (Vec GravityFieldUnit e)
+nBodyGravitationField :: (HasMass a e, HasCenterOfGravity a e) => [a] -> SpatialField e (Vec GravityFieldUnit e)
 nBodyGravitationField particles =
     let gravityByOneParticle = \particle -> (\x -> if x == centerOfGravity particle
                                                    then zeroGravityValue
@@ -88,8 +91,7 @@ nBodyGravitationField particles =
              
 
 
-nBodyGravityStep :: ( Floating b, Eq b
-                    , HasMass a b, HasCenterOfGravity a b, HasVelocity a b
+nBodyGravityStep :: ( HasMass a b, HasCenterOfGravity a b, HasVelocity a b
                     , ModifiableVelocity a b, ModifiableCenterOfGravity a b
                     )
                     => [a] -> D.Time b -> [a]
