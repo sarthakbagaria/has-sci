@@ -7,6 +7,9 @@ The aim of this libary is to utilise the powerful type system of haskell and its
 
 ## Simulators
 
+* Classical gravity simulator.
+* Quantum oscillation simulator.
+
 Build and run using [stack](https://docs.haskellstack.org/en/stable/README/#how-to-install):
 ```
 stack build

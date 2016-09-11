@@ -116,7 +116,7 @@ smallBoxConfig = OscillatorInABoxConfig { plankConstantConfig = 6.62607004e-16 -
                                           -- tune variance of wave based on mass and frequency (and Plank's constant) to get a nice simulation
                                         , initialAmplitudeConfig = gaussianWave 0 0 3.8845e-6
                                         , fpsConfig = 30
-                                        , timeFactorConfig = 0.5
+                                        , timeFactorConfig = 1
                                         }
 
 bigBoxConfig :: OscillatorInABoxConfig
@@ -205,43 +205,49 @@ sparseMatModelSimulator config = (oscillationOperator, initialModel, drawing, co
         posYOp = SparseMatOperator $! ES.fromList indexRange indexRange $! map (\pos@(Position _ y) -> (positionToIndex pos, positionToIndex pos, fromIntegral y)) positionRange
 
         momXOp :: SparseMatOperator (Complex Double) (CComplex CDouble) Position
-        -- taking dx as 1
-        momXOp = SparseMatOperator $! ES.fromList indexRange indexRange $! ( (map (\pos@(Position x y) -> ( positionToIndex (Position (x P.+ 1) y)
-                                                                                                          , positionToIndex pos
-                                                                                                          , 0 :+ (  plankConstant)
+        -- taking dx as 2
+        -- <x'| P_x |a>  =  -ih ( d/dx(a)|_x' ) = - ( a(x'+1) - a(x'-1) ) * ih/2   = - (<x'+1|a> - <x'-1|a>) * ih / 2
+        momXOp = SparseMatOperator $! ES.fromList indexRange indexRange $! ( (map (\pos@(Position x y) -> ( positionToIndex pos
+                                                                                                          , positionToIndex (Position (x P.+ 1) y)
+                                                                                                          , 0 :+ (- plankConstant/2)
                                                                                                           )
                                                                                   )
-                                                                              -- removing max x from position range to keeo operator within lattice
+                                                                              -- removing max x from position range to keep operator within lattice
+                                                                              -- that would give 0 contribution anyway
                                                                               [Position i j | i <- [(-halfWidth) .. (halfWidth-1)], j <- [-(halfHeight) .. halfHeight]]
                                                                              )
                                                                              ++
-                                                                             (map (\pos@(Position x y) -> ( positionToIndex (Position (x P.- 1) y)
-                                                                                                          , positionToIndex pos
-                                                                                                          , 0 :+ (- plankConstant)
+                                                                             (map (\pos@(Position x y) -> ( positionToIndex pos
+                                                                                                          , positionToIndex (Position (x P.- 1) y)
+                                                                                                          , 0 :+ (  plankConstant/2)
                                                                                                           )
                                                                                   )
-                                                                              -- removing min x from position range to keeo operator within lattice
+                                                                              -- removing min x from position range to keep operator within lattice
+                                                                              -- that would give 0 contribution anyway
                                                                               [Position i j | i <- [-(halfWidth-1) .. (halfWidth)], j <- [-(halfHeight) .. halfHeight]]
                                                                              )
                                                                            )
         
         momYOp :: SparseMatOperator (Complex Double) (CComplex CDouble) Position
-        -- taking dy as 1
-        momYOp = SparseMatOperator $! ES.fromList indexRange indexRange $! ( (map (\pos@(Position x y) -> ( positionToIndex (Position x (y P.+ 1))
-                                                                                                          , positionToIndex pos
-                                                                                                          , 0 :+ (  plankConstant)
+        -- taking dy as 2
+        -- <y'| P_y |a>  =  -ih ( d/dy(a)|_y' ) = - ( a(y'+1) - a(y'-1) ) * ih/2   = - (<y'+1|a> - <y'-1|a>) * ih / 2
+        momYOp = SparseMatOperator $! ES.fromList indexRange indexRange $! ( (map (\pos@(Position x y) -> ( positionToIndex pos
+                                                                                                          , positionToIndex (Position x (y P.+ 1))
+                                                                                                          , 0 :+ (- plankConstant/2)
                                                                                                           )
                                                                                   )
-                                                                              -- removing max y from position range to keeo operator within lattice
+                                                                              -- removing max y from position range to keep operator within lattice
+                                                                              -- that would give 0 contribution anyway
                                                                               [Position i j | i <- [(-halfWidth) .. (halfWidth)], j <- [-(halfHeight) .. (halfHeight-1)]]
                                                                              )
                                                                              ++
-                                                                             (map (\pos@(Position x y) -> ( positionToIndex (Position x (y P.- 1))
-                                                                                                          , positionToIndex pos
-                                                                                                          , 0 :+ (- plankConstant)
+                                                                             (map (\pos@(Position x y) -> ( positionToIndex pos
+                                                                                                          , positionToIndex (Position x (y P.- 1))
+                                                                                                          , 0 :+ (  plankConstant/2)
                                                                                                           )
                                                                                   )
-                                                                              -- removing min y from position range to keeo operator within lattice
+                                                                              -- removing min y from position range to keep operator within lattice
+                                                                              -- that would give 0 contribution anyway
                                                                               [Position i j | i <- [(-halfWidth) .. (halfWidth)], j <- [-(halfHeight-1) .. halfHeight]]
                                                                              )
                                                                            )
@@ -323,26 +329,33 @@ sparseModelSimulator config = (oscillationOperator, initialModel, drawing, confi
         posYOp = SparseOperator $! M.fromList $! map (\pos@(Position _ y) -> ((pos,pos), ((fromIntegral y) :+ 0))) positionRange
 
         momXOp :: SparseOperator (Complex Double) Position
-        -- taking dx as 1
-        momXOp = SparseOperator $! M.fromList $! ( (map (\pos@(Position x y) -> ( (Position (x P.+ 1) y, pos), 0 :+ (  plankConstant) ))
+        -- taking dx as 2
+        -- <x'| P_x |a>  =  -ih ( d/dx(a)|_x' ) = - ( a(x'+1) - a(x'-1) ) * ih/2   = - (<x'+1|a> - <x'-1|a>) * ih / 2        
+        momXOp = SparseOperator $! M.fromList $! ( (map (\pos@(Position x y) -> ( (pos, Position (x P.+ 1) y), 0 :+ (- plankConstant/2) ))
                                                         -- removing max x from position range to keeo operator within lattice
+                                                        -- that would give 0 contribution anyway
                                                         [Position i j | i <- [(-halfWidth) .. (halfWidth-1)], j <- [-(halfHeight) .. halfHeight]]
-                                                   ) ++
-                                                   (map (\pos@(Position x y) -> ( (Position (x P.- 1) y, pos), 0 :+ (- plankConstant) ))
+                                                   )
+                                                   ++
+                                                   (map (\pos@(Position x y) -> ( (pos, Position (x P.- 1) y), 0 :+ (  plankConstant/2) ))
                                                         -- removing min x from position range to keeo operator within lattice
+                                                        -- that would give 0 contribution anyway
                                                         [Position i j | i <- [-(halfWidth-1) .. (halfWidth)], j <- [-(halfHeight) .. halfHeight]]
                                                    )
                                                  )
 
         momYOp :: SparseOperator (Complex Double) Position
-        -- taking dy as 1
-        momYOp = SparseOperator $! M.fromList $! ( (map (\pos@(Position x y) -> ( (Position x (y P.+ 1), pos), 0 :+ (  plankConstant) ))
+        -- taking dy as 2
+        -- <y'| P_y |a>  =  -ih ( d/dy(a)|_y' ) = - ( a(y'+1) - a(y'-1) ) * ih/2   = - (<y'+1|a> - <y'-1|a>) * ih / 2
+        momYOp = SparseOperator $! M.fromList $! ( (map (\pos@(Position x y) -> ( (pos, Position x (y P.+ 1)), 0 :+ (- plankConstant/2) ))
                                                         -- removing max y from position range to keeo operator within lattice
+                                                        -- that would give 0 contribution anyway
                                                         [Position i j | i <- [(-halfWidth) .. (halfWidth)], j <- [-(halfHeight) .. (halfHeight-1)]]
                                                    )
-                                                    ++
-                                                   (map (\pos@(Position x y) -> ( (Position x (y P.- 1), pos), 0 :+ (- plankConstant) ))
+                                                   ++
+                                                   (map (\pos@(Position x y) -> ( (pos, Position x (y P.- 1)), 0 :+ (  plankConstant/2) ))
                                                         -- removing min y from position range to keeo operator within lattice
+                                                        -- that would give 0 contribution anyway
                                                         [Position i j | i <- [(-halfWidth) .. (halfWidth)], j <- [-(halfHeight-1) .. halfHeight]]
                                                    )
                                                                               
@@ -429,6 +442,8 @@ arrayModelSimulator config = (oscillationOperator, initialModel, drawing, config
                                                                                    )
 
         momXOp :: LatticeOperator (Complex Double) Position
+        -- taking dx as 2
+        -- <x'| P_x |a>  =  -ih ( d/dx(a)|_x' ) = - ( a(x'+1) - a(x'-1) ) * ih/2   = - (<x'+1|a> - <x'-1|a>) * ih / 2        
         momXOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> let xo = posX $! indexToPosition j
                                                                                                       yo = posY $! indexToPosition j
                                                                                                       xn = posX $! indexToPosition i
@@ -437,13 +452,14 @@ arrayModelSimulator config = (oscillationOperator, initialModel, drawing, config
                                                                                                     case yn==yo of
                                                                                                       False -> 0
                                                                                                       True
-                                                                                                        -- taking dx as 1
-                                                                                                        |xn == xo P.+ 1 -> 0 :+ (plankConstant)
-                                                                                                        |xn == xo P.- 1 -> 0 :+ (-(plankConstant))
+                                                                                                        |xn == xo P.+ 1 -> 0 :+ (  plankConstant/2)
+                                                                                                        |xn == xo P.- 1 -> 0 :+ (- plankConstant/2)
                                                                                                         |otherwise -> 0
                                                                                    )
 
         momYOp :: LatticeOperator (Complex Double) Position
+        -- taking dy as 2
+        -- <y'| P_y |a>  =  -ih ( d/dy(a)|_y' ) = - ( a(y'+1) - a(y'-1) ) * ih/2   = - (<y'+1|a> - <y'-1|a>) * ih / 2        
         momYOp = LatticeOperator $! R.fromFunction (Z :. indexRange :. indexRange) (\(Z:.i:.j) -> let xo = posX $! indexToPosition j
                                                                                                       yo = posY $! indexToPosition j
                                                                                                       xn = posX $! indexToPosition i
@@ -452,9 +468,8 @@ arrayModelSimulator config = (oscillationOperator, initialModel, drawing, config
                                                                                                     case xn==xo of
                                                                                                       False -> 0
                                                                                                       True
-                                                                                                        -- taking dy as 1
-                                                                                                        |yn == yo P.+ 1 -> 0 :+ (plankConstant)
-                                                                                                        |yn == yo P.- 1 -> 0 :+ (-(plankConstant))
+                                                                                                        |yn == yo P.+ 1 -> 0 :+ (  plankConstant/2)
+                                                                                                        |yn == yo P.- 1 -> 0 :+ (- plankConstant/2)
                                                                                                         |otherwise -> 0
                                                                                    )
 
@@ -530,15 +545,17 @@ indexFunctionsSimulator config = (oscillationOperator, initialModel, drawing, co
         posYOp = InfOperator $ \pos@(Position _ y) -> M.fromList [(pos, (fromIntegral y) :+ 0)]
 
         momXOp :: InfOperator (Complex Double) Position
-        -- taking dx as 1
-        momXOp = InfOperator $ \pos@(Position x y) -> M.fromList [ ( Position (x P.- 1) y, (0 :+ (plankConstant)) ),
-                                                                   ( Position (x P.+ 1) y, (0 :+ (-(plankConstant))) )
+        -- taking dx as 2
+        -- <x'| P_x |a>  =  -ih ( d/dx(a)|_x' ) = - ( a(x'+1) - a(x'-1) ) * ih/2   = - (<x'+1|a> - <x'-1|a>) * ih / 2        
+        momXOp = InfOperator $ \pos@(Position x y) -> M.fromList [ ( Position (x P.- 1) y, (0 :+ (  plankConstant/2)) ),
+                                                                   ( Position (x P.+ 1) y, (0 :+ (- plankConstant/2)) )
                                                                  ]
 
         momYOp :: InfOperator (Complex Double) Position
-        -- taking dy as 1
-        momYOp = InfOperator $ \pos@(Position x y) -> M.fromList [ ( Position x (y P.- 1), 0 :+ (plankConstant) ),
-                                                                   ( Position x (y P.+ 1), 0 :+ (-(plankConstant)) )
+        -- taking dy as 2
+        -- <y'| P_y |a>  =  -ih ( d/dy(a)|_y' ) = - ( a(y'+1) - a(y'-1) ) * ih/2   = - (<y'+1|a> - <y'-1|a>) * ih / 2        
+        momYOp = InfOperator $ \pos@(Position x y) -> M.fromList [ ( Position x (y P.- 1), 0 :+ (  plankConstant/2) ),
+                                                                   ( Position x (y P.+ 1), 0 :+ (- plankConstant/2) )
                                                                  ]
 
         momSquaredOp = (momXOp `pow1p` 2) + (momYOp `pow1p` 2)
