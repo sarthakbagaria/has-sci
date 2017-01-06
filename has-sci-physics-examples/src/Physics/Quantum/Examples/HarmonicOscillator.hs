@@ -43,6 +43,7 @@ import Data.Array.Repa                              (Z(..), (:.)(..))
 import Data.Functor.Identity (runIdentity)
 
 import qualified Data.Eigen.SparseMatrix as ES
+import qualified Data.Eigen.Matrix as ESD
 import Data.Eigen.Matrix                            (CComplex)
 import Foreign.C.Types                              (CDouble)
 
@@ -51,7 +52,7 @@ import qualified Data.List as L
 
 import Graphics.Gloss
 import Graphics.Gloss.Data.ViewPort                 (ViewPort)
-
+import Graphics.Gloss.Raster.Field                  (rgb', makePicture)
 
 import Debug.Trace           (trace)
 import Control.Concurrent    (threadDelay)
@@ -98,7 +99,7 @@ type Variance = Double
 
 
 gaussianWave :: Int -> Int -> Variance -> (Position -> Complex Double)
-gaussianWave xCenter yCenter var = \pos@(Position x y) -> 
+gaussianWave xCenter yCenter var = \(Position x y) -> 
     ( exp ( (
               - ( ((fromIntegral (x - xCenter))P.^2) P.+ ((fromIntegral (y - yCenter) )P.^2) )
             ) P./ (2 P.* (var P.^ 2))
@@ -127,8 +128,8 @@ bigBoxConfig = OscillatorInABoxConfig { plankConstantConfig = 6.62607004e-16 -- 
                                       , halfHeightConfig = 100
                                         -- tune variance of wave based on mass and frequency (and Plank's constant) to get a nice simulation
                                       , initialAmplitudeConfig = gaussianWave 0 0 3.8845e-6
-                                      , fpsConfig = 20
-                                      , timeFactorConfig = 0.5
+                                      , fpsConfig = 30
+                                      , timeFactorConfig = 1
                                       }  
 
 
@@ -167,8 +168,6 @@ indexToPositionConfig config index = Position ( (floor ((fromIntegral index) P./
 
 ------------------------------------
 -- simulate oscillation using Eigen library's sparse matrices
--- most performant simulator
--- can work for around haldwidth=100, halfHeight=100 in less than a second
 ------------------------------------
 
 
@@ -271,15 +270,31 @@ sparseMatModelSimulator config = (oscillationOperator, initialModel, drawing, co
 
           
         initialModel :: SparseMatKet (Complex Double) (CComplex CDouble) Position
-        initialModel = normalizeVector $! SparseMatKet $! ES.fromList indexRange 1 $! map ( \pos@(Position x y) -> ( positionToIndex pos
-                                                                                                                   , 0
-                                                                                                                   , initialAmplitude pos
-                                                                                                                   )
+        initialModel = normalizeVector $! SparseMatKet $! ES.fromList indexRange 1 $! map ( \pos -> ( positionToIndex pos
+                                                                                                    , 0
+                                                                                                    , initialAmplitude pos
+                                                                                                    )
                                                                                           ) positionRange
 
-
+        -- bitmap drawing
         drawing :: SparseMatKet (Complex Double) (CComplex CDouble) Position -> Picture
-        drawing (SparseMatKet mat) = {- trace "Drawing" $ -} 
+        drawing (SparseMatKet mat) =
+            makePicture (2*halfWidth) (2*halfHeight)
+                        1 1
+                        ( \(x,y) -> let index = positionToIndex $! Position (round $! x P.* (P.fromIntegral halfWidth))
+                                                                            (round $! y P.* (P.fromIntegral halfHeight))
+                                        amp = mat ES.! (index, 0)
+                                        den = double2Float $! normSquared amp
+                                    in {-trace (show $ (index, amp, den)) $ -} rgb' den 0 0
+                        )
+            where
+                normSquared cn = (magnitude cn) P.^ 2
+
+
+        {-
+        -- drawing with objects
+        drawing :: SparseMatKet (Complex Double) (CComplex CDouble) Position -> Picture
+        drawing (SparseMatKet mat) = {- trace "Drawing" $ -}
             pictures $ catMaybes $ map (\elem -> case elem of
                                            (index, 0, amp) -> let pos = indexToPosition index
                                                               in Just $! translate (fromIntegral $! posX pos) (fromIntegral $! posY pos) $!
@@ -289,6 +304,7 @@ sparseMatModelSimulator config = (oscillationOperator, initialModel, drawing, co
                                        ) $! ES.toList $! mat
           where
                 normSquared cn = (magnitude cn) P.^ 2
+        -}
 
 
 
@@ -296,7 +312,6 @@ sparseMatModelSimulator config = (oscillationOperator, initialModel, drawing, co
 
 ------------------------------------
 -- simulate oscillation using sparse maps
--- can work for around halfWidth=20, halfHeight=20 under 5 seconds
 ------------------------------------
 
 
@@ -380,9 +395,26 @@ sparseModelSimulator config = (oscillationOperator, initialModel, drawing, confi
 
           
         initialModel :: SparseKet (Complex Double) Position
-        initialModel = normalizeVector $! SparseKet $! M.fromList $! map ( \pos@(Position x y) -> (pos, initialAmplitude pos) ) positionRange
+        initialModel = normalizeVector $! SparseKet $! M.fromList $! map ( \pos -> (pos, initialAmplitude pos) ) positionRange
 
+        -- bitmap drawing
+        drawing :: SparseKet (Complex Double) Position -> Picture
+        drawing (SparseKet coeffMap) =
+            makePicture (2*halfWidth) (2*halfHeight)
+                        1 1
+                        ( \(x,y) -> let pos = Position (round $! x P.* (P.fromIntegral halfWidth))
+                                                       (round $! y P.* (P.fromIntegral halfHeight))
+                                        maybeAmp = M.lookup pos coeffMap
+                                    in case maybeAmp of
+                                           Nothing -> rgb' 0 0 0
+                                           Just amp -> let den = double2Float $! normSquared amp
+                                                       in {-trace (show $ (index, amp, den)) $ -} rgb' den 0 0
+                        )
+            where
+                normSquared cn = (magnitude cn) P.^ 2
 
+        {-
+        -- drawing with objects
         drawing :: SparseKet (Complex Double) Position -> Picture
         drawing (SparseKet coeffMap) = {- trace "Drawing" $ -} 
             pictures $ map (\((Position x y), amp) -> translate (fromIntegral x) (fromIntegral y) $!
@@ -391,7 +423,7 @@ sparseModelSimulator config = (oscillationOperator, initialModel, drawing, confi
                            ) $! M.toList $! coeffMap
             where
                 normSquared cn = (magnitude cn) P.^ 2
-
+        -}
 
 
 
@@ -498,8 +530,25 @@ arrayModelSimulator config = (oscillationOperator, initialModel, drawing, config
         -- initial ket
         initialModel :: LatticeKet (Complex Double) Position
         initialModel = LatticeKet $! R.fromFunction (Z :. indexRange) $! \(Z:.i) -> initialAmplitude $! indexToPosition i
-              
 
+        -- bitmap drawing
+        drawing :: LatticeKet (Complex Double) Position -> Picture
+        drawing (LatticeKet vector) =
+            makePicture (2*halfWidth) (2*halfHeight)
+                        1 1
+                        ( \(x,y) -> let pos = Position (round $! x P.* (P.fromIntegral halfWidth))
+                                                       (round $! y P.* (P.fromIntegral halfHeight))
+                                        amp = vector R.! ( Z:.(positionToIndex pos) )
+                                        den = double2Float $! normSquared amp
+                                    in {-trace (show $ (pos, amp, den)) $ -} rgb' den 0 0
+                        )
+            where
+                normSquared cn = (magnitude cn) P.^ 2
+
+
+                                                                                    
+        {-
+        -- drawing with objects
         drawing :: LatticeKet (Complex Double) Position -> Picture
         drawing (LatticeKet vector) = {- trace "Drawing" $ -}
           pictures $ map (\(Position x y) -> translate (fromIntegral x) (fromIntegral y) $!
@@ -507,7 +556,7 @@ arrayModelSimulator config = (oscillationOperator, initialModel, drawing, config
                                     circleSolid 1
                          ) $ positionRange
             where normSquared cn = (magnitude cn) P.^ 2
-              
+        -}
      
 
 
@@ -515,6 +564,7 @@ arrayModelSimulator config = (oscillationOperator, initialModel, drawing, config
 ------------------------------------
 -- simulate oscillation using index functions
 -- doesn't work at the moment
+-- no NormalizeVector instance for InfKet
 ------------------------------------
 
 indexFunctionsSimulator :: OscillatorInABoxConfig
@@ -547,16 +597,16 @@ indexFunctionsSimulator config = (oscillationOperator, initialModel, drawing, co
         momXOp :: InfOperator (Complex Double) Position
         -- taking dx as 2
         -- <x'| P_x |a>  =  -ih ( d/dx(a)|_x' ) = - ( a(x'+1) - a(x'-1) ) * ih/2   = - (<x'+1|a> - <x'-1|a>) * ih / 2        
-        momXOp = InfOperator $ \pos@(Position x y) -> M.fromList [ ( Position (x P.- 1) y, (0 :+ (  plankConstant/2)) ),
-                                                                   ( Position (x P.+ 1) y, (0 :+ (- plankConstant/2)) )
-                                                                 ]
+        momXOp = InfOperator $ \(Position x y) -> M.fromList [ ( Position (x P.- 1) y, (0 :+ (  plankConstant/2)) ),
+                                                               ( Position (x P.+ 1) y, (0 :+ (- plankConstant/2)) )
+                                                             ]
 
         momYOp :: InfOperator (Complex Double) Position
         -- taking dy as 2
         -- <y'| P_y |a>  =  -ih ( d/dy(a)|_y' ) = - ( a(y'+1) - a(y'-1) ) * ih/2   = - (<y'+1|a> - <y'-1|a>) * ih / 2        
-        momYOp = InfOperator $ \pos@(Position x y) -> M.fromList [ ( Position x (y P.- 1), 0 :+ (  plankConstant/2) ),
-                                                                   ( Position x (y P.+ 1), 0 :+ (- plankConstant/2) )
-                                                                 ]
+        momYOp = InfOperator $ \(Position x y) -> M.fromList [ ( Position x (y P.- 1), 0 :+ (  plankConstant/2) ),
+                                                               ( Position x (y P.+ 1), 0 :+ (- plankConstant/2) )
+                                                             ]
 
         momSquaredOp = (momXOp `pow1p` 2) + (momYOp `pow1p` 2)
         posSquaredOp = (posXOp `pow1p` 2) + (posYOp `pow1p` 2)
@@ -576,6 +626,22 @@ indexFunctionsSimulator config = (oscillationOperator, initialModel, drawing, co
         initialModel :: InfKet (Complex Double) Position
         initialModel = InfKet $! initialAmplitude
 
+        -- bitmap drawing
+        drawing :: InfKet (Complex Double) Position -> Picture
+        drawing (InfKet coeffMap) = {- trace "Drawing" $ -}
+            makePicture (2*halfWidth) (2*halfHeight)
+                        1 1
+                        ( \(x,y) -> let pos = Position (round $! x P.* (P.fromIntegral halfWidth))
+                                                       (round $! y P.* (P.fromIntegral halfHeight))
+                                        amp = coeffMap pos
+                                        den = double2Float $! normSquared amp
+                                    in {-trace (show $ (pos, amp, den)) $ -} rgb' den 0 0
+                        )
+            where
+                normSquared cn = (magnitude cn) P.^ 2
+
+        {-
+        -- drawing with objects        
         drawing :: InfKet (Complex Double) Position -> Picture
         drawing (InfKet coeffMap) = {- trace "Drawing" $ -}
             pictures $ map (\(Position x y) -> translate (fromIntegral x) (fromIntegral y) $!
@@ -583,7 +649,7 @@ indexFunctionsSimulator config = (oscillationOperator, initialModel, drawing, co
                                                circleSolid 1
                            ) $ positionRange
             where normSquared cn = (magnitude cn) P.^ 2
-
+        -}
 
 
 
@@ -662,12 +728,34 @@ class NormalizeVector a where
     normalizeVector :: a -> a
 
 
+instance NormalizeVector (SparseMatKet (Complex Double) (CComplex CDouble) Position) where
+    normalizeVector ket@(SparseMatKet mat) = (1 / (norm :+ 0)) *^ ket
+        where
+            norm :: Double
+            -- norm = realPart $! ES.norm mat
+            -- normalizing with max of norms instead of sum of squares of norm to make the states more visible in simulation
+            norm = ESD.maxCoeff $ ESD.convert normSquared $ ES.toMatrix mat
+            
+            normSquared cn = (magnitude cn) P.^ 2
+
+
 instance NormalizeVector (SparseKet (Complex Double) Position) where
     normalizeVector ket@(SparseKet ketMap) = (1 / (norm :+ 0)) *^ ket
         where
             -- ketNormSquared = M.foldl' (P.+) 0 $! M.map (\coeff -> normSquared coeff) ketMap
             -- normalizing with max of norms instead of sum of squares of norm to make the states more visible in simulation
             maxNormSquared = M.foldl' (\a b -> max a b) 0 $! M.map (\coeff -> normSquared coeff) ketMap
+            normSquared cn = (magnitude cn) P.^ 2
+            norm :: Double
+            norm = sqrt $! maxNormSquared
+
+        
+instance NormalizeVector (LatticeKet (Complex Double) Position) where
+    normalizeVector ket@(LatticeKet array) = (1 / (norm :+ 0)) *^ ket
+        where
+            -- ketNormSquared = R.foldlAllS (P.+) 0 $! R.map (\coeff -> normSquared coeff) array
+            -- normalizing with max of norms instead of sum of squares of norm to make the states more visible in simulation
+            maxNormSquared = R.foldAllS (\a b -> max a b) 0 $! R.map (\coeff -> normSquared coeff) array
             normSquared cn = (magnitude cn) P.^ 2
             norm :: Double
             norm = sqrt $! maxNormSquared
@@ -684,29 +772,6 @@ instance NormalizeVector (InfKet (Complex Double) Position) where
             norm :: Double
             norm = sqrt $! maxNormSquared
 -}
-
-        
-instance NormalizeVector (LatticeKet (Complex Double) Position) where
-    normalizeVector ket@(LatticeKet array) = (1 / (norm :+ 0)) *^ ket
-        where
-            -- ketNormSquared = R.foldlAllS (P.+) 0 $! R.map (\coeff -> normSquared coeff) array
-            -- normalizing with max of norms instead of sum of squares of norm to make the states more visible in simulation
-            maxNormSquared = R.foldAllS (\a b -> max a b) 0 $! R.map (\coeff -> normSquared coeff) array
-            normSquared cn = (magnitude cn) P.^ 2
-            norm :: Double
-            norm = sqrt $! maxNormSquared
-
-
-instance NormalizeVector (SparseMatKet (Complex Double) (CComplex CDouble) Position) where
-    normalizeVector ket@(SparseMatKet mat) = (1 / (norm :+ 0)) *^ ket
-        where
-            norm :: Double
-            --norm = realPart $! ES.norm mat
-            --normalizing with max of norms instead of sum of squares of norm to make the states more visible in simulation
-            norm = L.maximum $ map (\(row, column, value) -> normSquared value) $ ES.toList $! mat
-            
-            normSquared cn = (magnitude cn) P.^ 2
-
 
 
   

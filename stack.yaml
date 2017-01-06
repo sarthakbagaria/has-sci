@@ -5,7 +5,8 @@ packages:
 - 'has-sci-physics-examples'
 
 extra-deps:
-  - gloss-1.10.2.3
+  - gloss-1.10.2.5
+  - gloss-raster-1.10.2.4
   - algebra-4.3
   - eigen-2.1.6
   
